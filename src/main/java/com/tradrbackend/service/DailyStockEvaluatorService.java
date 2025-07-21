@@ -37,7 +37,7 @@ public class DailyStockEvaluatorService {
         this.stockAnalyzerService = stockAnalyzerService;
     }
 
-    @Scheduled(cron = "0 34 21 * * ?") // Runs every day at 1 AM
+    @Scheduled(cron = "0 17 09 * * ?") // Runs every day at 6 30 AM (local time is PST, so 9 30 EST market open)
     public void runDailyStockEvaluation() {
         System.out.println("Starting daily stock evaluation job...");
         try {
@@ -83,49 +83,63 @@ public class DailyStockEvaluatorService {
                     List<String> trackedStocks = (List<String>) userData.get("stocks");
                     System.out.println("Processing stocks for user: " + userId + " - " + trackedStocks);
 
+                    int defaultDuration = 3;
+                    String defaultUnit = "month";
                     for (String ticker : trackedStocks) {
                         String msg = "";
                         try {
-                            Map<LocalDate, BigDecimal> historicalData = alphaVantageService.getHistoricalAdjustedPrices(ticker, 5, "day");
-                            StockAnalysisResponse analysisResult = stockAnalyzerService.performStockAnalysis(historicalData);
+                            Map<LocalDate, BigDecimal> historicalData = alphaVantageService.getHistoricalAdjustedPrices(ticker);
+                            StockAnalysisResponse analysisResult = stockAnalyzerService.performStockAnalysis(historicalData, ticker, defaultDuration, defaultUnit);
                             msg = analysisResult.getMessage();
 
-                            // --- START: NEW DEBUG LOGS FOR ANALYSIS RESULT ---
-                            System.out.println("DEBUG: Analysis Result for " + ticker + ": " + msg);
+                                                        // --- START: NEW DEBUG LOGS FOR ANALYSIS RESULT ---
+                            System.out.println("DEBUG: Analysis Result for " + ticker + ": " + analysisResult.getMessage());
                             System.out.println("DEBUG: Is statistically significant for " + ticker + ": " + analysisResult.isStatisticallySignificant());
+                            System.out.println("DEBUG: RSI Signal for " + ticker + ": " + analysisResult.getRsiSignal());
+                            System.out.println("DEBUG: MACD Signal for " + ticker + ": " + analysisResult.getMacdSignal());
+                            System.out.println("DEBUG: BB Signal for " + ticker + ": " + analysisResult.getBollingerBandSignal());
+                            System.out.println("DEBUG: Signal Score for " + ticker + ": " + analysisResult.getSignalScore());
+                            System.out.println("DEBUG: Score Interpretation for " + ticker + ": " + analysisResult.getScoreInterpretation());
                             // --- END: NEW DEBUG LOGS ---
+                            boolean shouldAlert = analysisResult.isStatisticallySignificant() ||
+                                                  "Buy".equals(analysisResult.getScoreInterpretation()) ||
+                                                  "Strong Buy".equals(analysisResult.getScoreInterpretation());
 
-                            if (analysisResult.isStatisticallySignificant()) {
+                            if (shouldAlert) {
                                 Map<String, Object> alert = new HashMap<>();
                                 alert.put("stockTicker", ticker);
-                                alert.put("alertType", msg.contains("significantly higher") ? "significant_increase" : "significant_drop");
-                                
-                                double percentageChange = 0.0;
-                                try {
-                                    int startIndex = msg.indexOf("Difference: ") + "Difference: ".length();
-                                    int endIndex = msg.indexOf("%", startIndex);
-                                    if (startIndex != -1 && endIndex != -1) {
-                                        percentageChange = Double.parseDouble(msg.substring(startIndex, endIndex).trim());
-                                    }
-                                } catch (Exception e) {
-                                    System.err.println("Could not parse percentage change from message: " + msg + ". Error: " + e.getMessage());
+                                // Determine alert type based on statistical significance or score
+                                if (analysisResult.isStatisticallySignificant()) {
+                                    alert.put("alertType", analysisResult.getMessage().contains("change") ? "statistical_change" : "statistical_alert");
+                                } else if ("Strong Buy".equals(analysisResult.getScoreInterpretation())) {
+                                    alert.put("alertType", "strong_buy_signal");
+                                } else if ("Buy".equals(analysisResult.getScoreInterpretation())) {
+                                    alert.put("alertType", "buy_signal");
+                                } else {
+                                    alert.put("alertType", "general_signal"); // Fallback
                                 }
-                                alert.put("percentageChange", percentageChange);
-                                alert.put("periodDays", 5);
-                                BigDecimal latestPrice = historicalData.entrySet().stream()
-                                    .max(Map.Entry.comparingByKey())
-                                    .map(Map.Entry::getValue)
-                                    .orElse(null);
-                                alert.put("currentPrice", latestPrice != null ? latestPrice.doubleValue() : null);
-
+                                
+                                alert.put("percentageChange", analysisResult.getIndicatorValues().get("PercentageChangeFromMean")); // You might add this to indicatorValues
+                                alert.put("periodDays", analysisResult.getReceivedDurationValue()); // Use the duration from analysis
+                                alert.put("periodUnit", analysisResult.getReceivedDurationUnit()); // Use the unit from analysis
+                                alert.put("currentPrice", analysisResult.getLatestPrice());
                                 alert.put("alertTimestamp", DateTimeFormatter.ISO_INSTANT.format(Instant.now()));
-                                alert.put("message", msg);
+                                alert.put("message", analysisResult.getMessage()); // Use the statistical message
+                                alert.put("isStatisticallySignificant", analysisResult.isStatisticallySignificant());
+                                alert.put("pValue", analysisResult.getPValue()); // Will be null for now
+                                alert.put("indicatorValues", analysisResult.getIndicatorValues()); // Store all raw indicator values
+                                alert.put("rsiSignal", analysisResult.getRsiSignal());
+                                alert.put("macdSignal", analysisResult.getMacdSignal());
+                                alert.put("bollingerBandSignal", analysisResult.getBollingerBandSignal());
+                                alert.put("signalScore", analysisResult.getSignalScore());
+                                alert.put("scoreInterpretation", analysisResult.getScoreInterpretation());
                                 alert.put("isRead", false);
 
-                                CollectionReference userAlertsCollection = firestore.collection(String.format("artifacts/%s/users/%s/userAlerts", APP_ID, userId)); // Corrected path for alerts
-
+                                CollectionReference userAlertsCollection = firestore.collection(String.format("artifacts/%s/users/%s/userAlerts", APP_ID, userId));
                                 userAlertsCollection.add(alert).get();
-                                System.out.println("Alert generated for " + userId + ": " + ticker);
+                                System.out.println("Alert generated for " + userId + " - " + ticker + ": " + analysisResult.getScoreInterpretation());
+                            } else {
+                                System.out.println("No significant alert generated for " + userId + " - " + ticker + ". Score: " + analysisResult.getSignalScore() + ", Is Significant: " + analysisResult.isStatisticallySignificant());
                             }
 
                             Thread.sleep(15000);
@@ -147,6 +161,7 @@ public class DailyStockEvaluatorService {
             System.out.println("Daily stock evaluation job finished.");
         } catch (InterruptedException | ExecutionException e) {
             System.err.println("Error fetching user data for daily evaluation: " + e.getMessage());
+            e.printStackTrace();
         }
     }
 }

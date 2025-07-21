@@ -43,26 +43,30 @@ public class StockController {
             @RequestParam String unit) {
         try {
             // 1. Get historical data from Alpha Vantage
+            // Call the getHistoricalAdjustedPrices method that fetches the full 100-day 'compact' data.
+            // The StockAnalyzerService will then filter this data based on 'duration' and 'unit'.
+            Map<LocalDate, BigDecimal> historicalData = alphaVantageService.getHistoricalAdjustedPrices(ticker);
 
-            Map<LocalDate, BigDecimal> historicalData = alphaVantageService.getHistoricalAdjustedPrices(ticker, duration, unit);
-
-            // 2. Perform statistical analysis
-            StockAnalysisResponse analysisResult = stockAnalyzer.performStockAnalysis(historicalData);
+            // 2. Perform statistical analysis, passing the ticker, duration, and unit for internal filtering and messaging
+            StockAnalysisResponse analysisResult = stockAnalyzer.performStockAnalysis(historicalData, ticker, duration, unit);
 
             return ResponseEntity.ok(analysisResult); // Return the analysis result with 200 OK
         } catch (IOException e) {
             // Handle API specific errors or general IO errors
-            // --- IMPORTANT CHANGE: Return a StockAnalysisResponse for errors too ---
+            System.err.println("IOException in analyzeStock for " + ticker + ": " + e.getMessage());
+            e.printStackTrace();
             return ResponseEntity.status(HttpStatus.BAD_GATEWAY)
                                  .body(new StockAnalysisResponse("Error fetching or processing stock data: " + e.getMessage(), false, null));
         } catch (IllegalArgumentException e) {
             // Handle invalid input errors (e.g., invalid unit)
-            // --- IMPORTANT CHANGE: Return a StockAnalysisResponse for errors too ---
+            System.err.println("IllegalArgumentException in analyzeStock for " + ticker + ": " + e.getMessage());
+            e.printStackTrace();
             return ResponseEntity.status(HttpStatus.BAD_REQUEST)
                                  .body(new StockAnalysisResponse("Invalid input: " + e.getMessage(), false, null));
         } catch (Exception e) {
             // Catch any other unexpected errors
-            // --- IMPORTANT CHANGE: Return a StockAnalysisResponse for errors too ---
+            System.err.println("An unexpected error occurred in analyzeStock for " + ticker + ": " + e.getMessage());
+            e.printStackTrace();
             return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
                                  .body(new StockAnalysisResponse("An unexpected error occurred: " + e.getMessage(), false, null));
         }
@@ -81,7 +85,7 @@ public class StockController {
             return ResponseEntity.ok("Daily stock evaluation job triggered successfully.");
         } catch (Exception e) { // Catch broader exception for controller
             System.err.println("Error triggering daily stock evaluation: " + e.getMessage());
-            e.printStackTrace(); // <--- ADDED THIS LINE TO PRINT FULL STACK TRACE
+            e.printStackTrace();
             return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
                                  .body("Failed to trigger daily stock evaluation: " + e.getMessage());
         }
