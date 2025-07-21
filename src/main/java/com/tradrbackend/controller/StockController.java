@@ -1,5 +1,10 @@
 package com.tradrbackend.controller;
 
+import java.io.IOException;
+import java.math.BigDecimal;
+import java.time.LocalDate;
+import java.util.Map;
+
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
@@ -10,12 +15,8 @@ import org.springframework.web.bind.annotation.RestController;
 
 import com.tradrbackend.response.StockAnalysisResponse;
 import com.tradrbackend.service.AlphaVantageService;
+import com.tradrbackend.service.DailyStockEvaluatorService;
 import com.tradrbackend.service.StockAnalyzerService;
-
-import java.io.IOException;
-import java.math.BigDecimal;
-import java.time.LocalDate;
-import java.util.Map;
 
 @RestController // Marks this class as a REST controller
 @RequestMapping("/api/stock") // Base path for all endpoints in this controller
@@ -23,12 +24,16 @@ public class StockController {
 
     private final AlphaVantageService alphaVantageService;
     private final StockAnalyzerService stockAnalyzer;
+    private final DailyStockEvaluatorService dailyStockEvaluatorService; // Inject the DailyStockEvaluatorService
+
 
     // Spring will automatically inject these services
     @Autowired
-    public StockController(AlphaVantageService alphaVantageService, StockAnalyzerService stockAnalyzer) {
+    public StockController(AlphaVantageService alphaVantageService, StockAnalyzerService stockAnalyzer, DailyStockEvaluatorService dailyStockEvaluatorService) {
         this.alphaVantageService = alphaVantageService;
         this.stockAnalyzer = stockAnalyzer;
+        this.dailyStockEvaluatorService = dailyStockEvaluatorService;
+
     }
 
     @GetMapping("/analyze")
@@ -60,6 +65,25 @@ public class StockController {
             // --- IMPORTANT CHANGE: Return a StockAnalysisResponse for errors too ---
             return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
                                  .body(new StockAnalysisResponse("An unexpected error occurred: " + e.getMessage(), false, null));
+        }
+    }
+
+    /**
+     * REST endpoint to manually trigger the daily stock evaluation job.
+     * This is useful for testing and debugging the scheduled task without waiting for the cron.
+     * Access via GET request to /api/stock/trigger-daily-evaluation
+     */
+    @GetMapping("/trigger-daily-evaluation")
+    public ResponseEntity<String> triggerDailyEvaluation() {
+        try {
+            System.out.println("Manual trigger for daily stock evaluation received.");
+            dailyStockEvaluatorService.runDailyStockEvaluation();
+            return ResponseEntity.ok("Daily stock evaluation job triggered successfully.");
+        } catch (Exception e) { // Catch broader exception for controller
+            System.err.println("Error triggering daily stock evaluation: " + e.getMessage());
+            e.printStackTrace(); // <--- ADDED THIS LINE TO PRINT FULL STACK TRACE
+            return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
+                                 .body("Failed to trigger daily stock evaluation: " + e.getMessage());
         }
     }
 }
