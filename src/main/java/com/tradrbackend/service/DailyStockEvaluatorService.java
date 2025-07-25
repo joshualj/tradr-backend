@@ -37,7 +37,7 @@ public class DailyStockEvaluatorService {
         this.stockAnalyzerService = stockAnalyzerService;
     }
 
-    @Scheduled(cron = "0 17 09 * * ?") // Runs every day at 6 30 AM (local time is PST, so 9 30 EST market open)
+    @Scheduled(cron = "0 30 06 * * ?") // Runs every day at 6 30 AM (local time is PST, so 9 30 EST market open)
     public void runDailyStockEvaluation() {
         System.out.println("Starting daily stock evaluation job...");
         try {
