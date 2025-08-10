@@ -1,17 +1,17 @@
 package com.tradrbackend.response;
 
+import java.util.List;
 import java.util.Map;
 
 import com.fasterxml.jackson.annotation.JsonAutoDetect;
 import com.fasterxml.jackson.annotation.JsonProperty;
+import com.tradrbackend.model.HistoricalPrice;
 
-import lombok.AllArgsConstructor;
 import lombok.Data;
-import lombok.NoArgsConstructor;
 
+// @AllArgsConstructor // Lombok annotation for an all-args constructor
+// @NoArgsConstructor // Lombok annotation for a no-args constructor
 @Data // Lombok annotation for getters, setters, toString, equals, hashCode
-@AllArgsConstructor // Lombok annotation for an all-args constructor
-@NoArgsConstructor // Lombok annotation for a no-args constructor
 @JsonAutoDetect(
     fieldVisibility = JsonAutoDetect.Visibility.ANY, // Serialize any field (private, protected, public)
     getterVisibility = JsonAutoDetect.Visibility.NONE, // Do NOT auto-detect regular getters (e.g., getMessage())
@@ -38,14 +38,16 @@ public class StockAnalysisResponse {
     private String bollingerBandSignal; 
     private Integer signalScore; // e.g., +3, -2
     private String scoreInterpretation; // e.g., "Buy", "Strong Sell"
+    @JsonProperty("historicalPrices") // Matches the name used in SwiftUI
+    private List<HistoricalPrice> historicalPrices;
 
+}
 
     // Subset constructor for initial analysis results (before full indicator/scoring calculation)
     // This is the constructor you explicitly requested to keep/add.
-    public StockAnalysisResponse(String message, boolean isStatisticallySignificant, Double pValue) {
-        this.message = message;
-        this.isStatisticallySignificant = isStatisticallySignificant;
-        this.pValue = pValue;
+    // public StockAnalysisResponse(String message, boolean isStatisticallySignificant, Double pValue) {
+    //     this.message = message;
+    //     this.isStatisticallySignificant = isStatisticallySignificant;
+    //     this.pValue = pValue;
         // Other fields will be initialized to their default values (null for objects, false for boolean, 0 for int/double)
-    }
-}
+    // }

@@ -55,20 +55,28 @@ public class StockController {
             // Handle API specific errors or general IO errors
             System.err.println("IOException in analyzeStock for " + ticker + ": " + e.getMessage());
             e.printStackTrace();
-            return ResponseEntity.status(HttpStatus.BAD_GATEWAY)
-                                 .body(new StockAnalysisResponse("Error fetching or processing stock data: " + e.getMessage(), false, null));
+            StockAnalysisResponse errorResponse1 = new StockAnalysisResponse(); // Uses @NoArgsConstructor
+            errorResponse1.setMessage("Error fetching or processing stock data: " + e.getMessage());
+            errorResponse1.setStatisticallySignificant(false);
+            errorResponse1.setPValue(null); // Or 0.0, depending on desired default for pValue
+            return ResponseEntity.status(HttpStatus.BAD_GATEWAY).body(errorResponse1);
         } catch (IllegalArgumentException e) {
             // Handle invalid input errors (e.g., invalid unit)
             System.err.println("IllegalArgumentException in analyzeStock for " + ticker + ": " + e.getMessage());
             e.printStackTrace();
-            return ResponseEntity.status(HttpStatus.BAD_REQUEST)
-                                 .body(new StockAnalysisResponse("Invalid input: " + e.getMessage(), false, null));
+            StockAnalysisResponse errorResponse2 = new StockAnalysisResponse(); // Uses @NoArgsConstructor
+            errorResponse2.setMessage("Invalid input: " + e.getMessage());
+            errorResponse2.setStatisticallySignificant(false);
+            errorResponse2.setPValue(null);
+            return ResponseEntity.status(HttpStatus.BAD_REQUEST).body(errorResponse2);
         } catch (Exception e) {
             // Catch any other unexpected errors
             System.err.println("An unexpected error occurred in analyzeStock for " + ticker + ": " + e.getMessage());
-            e.printStackTrace();
-            return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
-                                 .body(new StockAnalysisResponse("An unexpected error occurred: " + e.getMessage(), false, null));
+            StockAnalysisResponse errorResponse3 = new StockAnalysisResponse(); // Uses @NoArgsConstructor
+            errorResponse3.setMessage("An unexpected error occurred: " + e.getMessage());
+            errorResponse3.setStatisticallySignificant(false);
+            errorResponse3.setPValue(null);
+            return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).body(errorResponse3);
         }
     }
 

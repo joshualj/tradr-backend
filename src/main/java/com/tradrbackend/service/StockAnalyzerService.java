@@ -5,6 +5,7 @@ import java.math.RoundingMode;
 import java.time.LocalDate;
 import java.util.ArrayList;
 import java.util.Collections;
+import java.util.Comparator;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -12,6 +13,7 @@ import java.util.stream.Collectors;
 
 import org.springframework.stereotype.Service;
 
+import com.tradrbackend.model.HistoricalPrice;
 import com.tradrbackend.response.StockAnalysisResponse;
 
 @Service // Marks this as a Spring service component
@@ -38,7 +40,7 @@ public class StockAnalyzerService {
      */
     public StockAnalysisResponse performStockAnalysis(Map<LocalDate, BigDecimal> historicalData, String ticker, int duration, String unit) {
         StockAnalysisResponse response = new StockAnalysisResponse();
-        response.setIndicatorValues(new LinkedHashMap<>()); // Initialize map
+        response.setIndicatorValues(new LinkedHashMap<String, Double>()); // Initialize map
         response.setReceivedDurationValue(duration); // Set received duration
         response.setReceivedDurationUnit(unit); // Set received unit
 
@@ -49,9 +51,23 @@ public class StockAnalyzerService {
             return response;
         }
 
-        // Convert map values to a list of prices for easier indexing
-        List<BigDecimal> prices = new ArrayList<>(historicalData.values());
-        List<LocalDate> dates = new ArrayList<>(historicalData.keySet());
+                // Convert the full map of historical data into a List of HistoricalPrice DTOs for the response
+        List<HistoricalPrice> historicalPriceList = historicalData.entrySet().stream()
+                .map(entry -> new HistoricalPrice(entry.getKey(), entry.getValue().doubleValue()))
+                // --- FIX IS HERE ---
+                // Sort by the 'date' field of the HistoricalPrice object
+                .sorted(Comparator.comparing(HistoricalPrice::getDate)) // Corrected Comparator
+                .collect(Collectors.toList());
+
+        response.setHistoricalPrices(historicalPriceList); // Set the historical prices in the response
+
+        // Use a list of only the *prices* (BigDecimals) for calculations, maintaining original order
+        List<BigDecimal> prices = historicalPriceList.stream()
+                                    .map(hp -> BigDecimal.valueOf(hp.getClose()))
+                                    .collect(Collectors.toList());
+        List<LocalDate> dates = historicalPriceList.stream()
+                                   .map(HistoricalPrice::getDate)
+                                   .collect(Collectors.toList());
 
         // Ensure enough data for analysis
         if (prices.size() < 2) {
