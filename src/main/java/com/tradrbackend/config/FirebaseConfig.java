@@ -3,6 +3,7 @@ package com.tradrbackend.config;
 import java.io.FileInputStream;
 import java.io.IOException;
 
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 
@@ -15,10 +16,8 @@ import com.google.firebase.cloud.FirestoreClient;
 @Configuration
 public class FirebaseConfig {
 
-    // Path to your service account key JSON file
-    // IMPORTANT: In production, use environment variables or a secure way to load this
-    // e.g., @Value("${firebase.service-account-path}")
-    private String serviceAccountPath = "./config/tradrfirebaseservice-firebase-adminsdk-fbsvc-e1e7553e53.json"; // <--- UPDATE THIS LINE
+    @Value("${firebase.service-account-path}")
+    private String serviceAccountPath;
 
     @Bean
     public FirebaseApp initializeFirebase() throws IOException {
