@@ -7,6 +7,7 @@ import com.fasterxml.jackson.annotation.JsonAutoDetect;
 import com.fasterxml.jackson.annotation.JsonProperty;
 import com.tradrbackend.model.HistoricalPrice;
 
+import com.tradrbackend.model.TechnicalIndicators;
 import lombok.Data;
 
 // @AllArgsConstructor // Lombok annotation for an all-args constructor
@@ -31,23 +32,16 @@ public class StockAnalysisResponse {
     private String error;
 
     private Double latestPrice; // Current price
-    private Map<String, Double> indicatorValues; // e.g., {"SMA50": 150.23, "RSI": 65.4}
-    //private List<String> activeSignals; // e.g., ["RSI_OVERBOUGHT", "MACD_BULLISH_CROSS"]
-    private String rsiSignal; // e.g., "Oversold", "Neutral", "Overbought", "Rising from Oversold"
-    private String macdSignal; // e.g., "Bullish Crossover", "Bearish Crossover", "Bullish Trend", "Bearish Trend"
-    private String bollingerBandSignal; 
+    private TechnicalIndicators indicators;
     private Integer signalScore; // e.g., +3, -2
     private String scoreInterpretation; // e.g., "Buy", "Strong Sell"
     @JsonProperty("historicalPrices") // Matches the name used in SwiftUI
     private List<HistoricalPrice> historicalPrices;
-
 }
 
-    // Subset constructor for initial analysis results (before full indicator/scoring calculation)
-    // This is the constructor you explicitly requested to keep/add.
-    // public StockAnalysisResponse(String message, boolean isStatisticallySignificant, Double pValue) {
-    //     this.message = message;
-    //     this.isStatisticallySignificant = isStatisticallySignificant;
-    //     this.pValue = pValue;
-        // Other fields will be initialized to their default values (null for objects, false for boolean, 0 for int/double)
-    // }
+//TODO: clean
+//private Map<String, Double> indicatorValues; // e.g., {"SMA50": 150.23, "RSI": 65.4}
+//    private String rsiSignal; // e.g., "Oversold", "Neutral", "Overbought", "Rising from Oversold"
+//    private String macdSignal; // e.g., "Bullish Crossover", "Bearish Crossover", "Bullish Trend", "Bearish Trend"
+//    private String bollingerBandSignal;
+//    private FinancialData financialData;

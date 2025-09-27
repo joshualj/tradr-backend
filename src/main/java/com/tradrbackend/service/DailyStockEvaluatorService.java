@@ -1,9 +1,6 @@
 package com.tradrbackend.service;
 
-import java.io.IOException;
-import java.math.BigDecimal;
 import java.time.Instant;
-import java.time.LocalDate;
 import java.time.format.DateTimeFormatter;
 import java.util.HashMap;
 import java.util.List;
@@ -27,14 +24,17 @@ public class DailyStockEvaluatorService {
     private final Firestore firestore;
     private final AlphaVantageService alphaVantageService;
     private final StockAnalyzerService stockAnalyzerService;
+    private final FinancialDataService financialDataService;
 
     private static final String APP_ID = "tradrfirebaseservice"; // Your actual Firebase Project ID
 
     @Autowired
-    public DailyStockEvaluatorService(Firestore firestore, AlphaVantageService alphaVantageService, StockAnalyzerService stockAnalyzerService) {
+    public DailyStockEvaluatorService(Firestore firestore, AlphaVantageService alphaVantageService,
+                                      StockAnalyzerService stockAnalyzerService, FinancialDataService financialDataService) {
         this.firestore = firestore;
         this.alphaVantageService = alphaVantageService;
         this.stockAnalyzerService = stockAnalyzerService;
+        this.financialDataService = financialDataService;
     }
 
     @Scheduled(cron = "0 30 06 * * ?") // Runs every day at 6 30 AM (local time is PST, so 9 30 EST market open)
@@ -79,8 +79,10 @@ public class DailyStockEvaluatorService {
                 System.out.println("DEBUG: Fetched userData for user " + userId + ": " + userData);
                 // --- END: Detailed Logging ---
 
-                if (userData != null && userData.containsKey("stocks")) {
-                    List<String> trackedStocks = (List<String>) userData.get("stocks");
+                String stocks = "stocks";
+
+                if (userData.containsKey(stocks)) {
+                    List<String> trackedStocks = (List<String>) userData.get(stocks);
                     System.out.println("Processing stocks for user: " + userId + " - " + trackedStocks);
 
                     int defaultDuration = 3;
@@ -88,16 +90,27 @@ public class DailyStockEvaluatorService {
                     for (String ticker : trackedStocks) {
                         String msg = "";
                         try {
-                            Map<LocalDate, BigDecimal> historicalData = alphaVantageService.getHistoricalAdjustedPrices(ticker);
-                            StockAnalysisResponse analysisResult = stockAnalyzerService.performStockAnalysis(historicalData, ticker, defaultDuration, defaultUnit);
-                            msg = analysisResult.getMessage();
+                            // NEW: Use the FinancialDataService to get a complete analysis response.
+                            // The .block() call makes the reactive stream synchronous, which is
+                            // suitable for this scheduled job's sequential processing.
+                            StockAnalysisResponse analysisResult = financialDataService.getStockAnalysisResponse(
+                                    ticker,
+                                    defaultDuration,
+                                    defaultUnit,
+                                    false
+                            ).block();
+
+                            if (analysisResult == null || analysisResult.getError() != null) {
+                                System.err.println("Analysis for " + ticker + " failed with error: " + (analysisResult != null ? analysisResult.getError() : "Unknown error"));
+                                continue;
+                            }
 
                                                         // --- START: NEW DEBUG LOGS FOR ANALYSIS RESULT ---
                             System.out.println("DEBUG: Analysis Result for " + ticker + ": " + analysisResult.getMessage());
                             System.out.println("DEBUG: Is statistically significant for " + ticker + ": " + analysisResult.isStatisticallySignificant());
-                            System.out.println("DEBUG: RSI Signal for " + ticker + ": " + analysisResult.getRsiSignal());
-                            System.out.println("DEBUG: MACD Signal for " + ticker + ": " + analysisResult.getMacdSignal());
-                            System.out.println("DEBUG: BB Signal for " + ticker + ": " + analysisResult.getBollingerBandSignal());
+                            System.out.println("DEBUG: RSI Signal for " + ticker + ": " + analysisResult.getIndicators().getRsiSignal());
+                            System.out.println("DEBUG: MACD Signal for " + ticker + ": " + analysisResult.getIndicators().getMacdSignal());
+                            System.out.println("DEBUG: BB Signal for " + ticker + ": " + analysisResult.getIndicators().getBollingerBandSignal());
                             System.out.println("DEBUG: Signal Score for " + ticker + ": " + analysisResult.getSignalScore());
                             System.out.println("DEBUG: Score Interpretation for " + ticker + ": " + analysisResult.getScoreInterpretation());
                             // --- END: NEW DEBUG LOGS ---
@@ -119,7 +132,7 @@ public class DailyStockEvaluatorService {
                                     alert.put("alertType", "general_signal"); // Fallback
                                 }
                                 
-                                alert.put("percentageChange", analysisResult.getIndicatorValues().get("PercentageChangeFromMean")); // You might add this to indicatorValues
+                                alert.put("percentageChange", analysisResult.getIndicators().getPercentageChangeFromMean()); // You might add this to indicatorValues
                                 alert.put("periodDays", analysisResult.getReceivedDurationValue()); // Use the duration from analysis
                                 alert.put("periodUnit", analysisResult.getReceivedDurationUnit()); // Use the unit from analysis
                                 alert.put("currentPrice", analysisResult.getLatestPrice());
@@ -127,10 +140,10 @@ public class DailyStockEvaluatorService {
                                 alert.put("message", analysisResult.getMessage()); // Use the statistical message
                                 alert.put("isStatisticallySignificant", analysisResult.isStatisticallySignificant());
                                 alert.put("pValue", analysisResult.getPValue()); // Will be null for now
-                                alert.put("indicatorValues", analysisResult.getIndicatorValues()); // Store all raw indicator values
-                                alert.put("rsiSignal", analysisResult.getRsiSignal());
-                                alert.put("macdSignal", analysisResult.getMacdSignal());
-                                alert.put("bollingerBandSignal", analysisResult.getBollingerBandSignal());
+                                alert.put("indicatorValues", analysisResult.getIndicators()); // Store all raw indicator values
+                                alert.put("rsiSignal", analysisResult.getIndicators().getRsiSignal());
+                                alert.put("macdSignal", analysisResult.getIndicators().getMacdSignal());
+                                alert.put("bollingerBandSignal", analysisResult.getIndicators().getBollingerBandSignal());
                                 alert.put("signalScore", analysisResult.getSignalScore());
                                 alert.put("scoreInterpretation", analysisResult.getScoreInterpretation());
                                 alert.put("isRead", false);
@@ -144,8 +157,6 @@ public class DailyStockEvaluatorService {
 
                             Thread.sleep(15000);
 
-                        } catch (IOException e) {
-                            System.err.println("Error fetching or analyzing stock " + ticker + " for user " + userId + ": " + e.getMessage());
                         } catch (InterruptedException e) {
                             Thread.currentThread().interrupt();
                             System.err.println("Daily stock evaluation interrupted.");

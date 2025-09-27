@@ -1,10 +1,6 @@
 package com.tradrbackend.controller;
 
-import java.io.IOException;
-import java.math.BigDecimal;
-import java.time.LocalDate;
-import java.util.Map;
-
+import com.tradrbackend.service.FinancialDataService;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
@@ -17,6 +13,7 @@ import com.tradrbackend.response.StockAnalysisResponse;
 import com.tradrbackend.service.AlphaVantageService;
 import com.tradrbackend.service.DailyStockEvaluatorService;
 import com.tradrbackend.service.StockAnalyzerService;
+import reactor.core.publisher.Mono;
 
 @RestController // Marks this class as a REST controller
 @RequestMapping("/api/stock") // Base path for all endpoints in this controller
@@ -25,59 +22,47 @@ public class StockController {
     private final AlphaVantageService alphaVantageService;
     private final StockAnalyzerService stockAnalyzer;
     private final DailyStockEvaluatorService dailyStockEvaluatorService; // Inject the DailyStockEvaluatorService
+    private final FinancialDataService financialDataService;
 
 
     // Spring will automatically inject these services
     @Autowired
-    public StockController(AlphaVantageService alphaVantageService, StockAnalyzerService stockAnalyzer, DailyStockEvaluatorService dailyStockEvaluatorService) {
+    public StockController(AlphaVantageService alphaVantageService, StockAnalyzerService stockAnalyzer,
+                           DailyStockEvaluatorService dailyStockEvaluatorService, FinancialDataService financialDataService) {
         this.alphaVantageService = alphaVantageService;
         this.stockAnalyzer = stockAnalyzer;
         this.dailyStockEvaluatorService = dailyStockEvaluatorService;
-
+        this.financialDataService = financialDataService;
     }
 
     @GetMapping("/analyze")
-    public ResponseEntity<StockAnalysisResponse> analyzeStock(
+    public Mono<ResponseEntity<StockAnalysisResponse>> analyzeStock(
             @RequestParam String ticker,
             @RequestParam int duration,
             @RequestParam String unit) {
-        try {
-            // 1. Get historical data from Alpha Vantage
-            // Call the getHistoricalAdjustedPrices method that fetches the full 100-day 'compact' data.
-            // The StockAnalyzerService will then filter this data based on 'duration' and 'unit'.
-            Map<LocalDate, BigDecimal> historicalData = alphaVantageService.getHistoricalAdjustedPrices(ticker);
 
-            // 2. Perform statistical analysis, passing the ticker, duration, and unit for internal filtering and messaging
-            StockAnalysisResponse analysisResult = stockAnalyzer.performStockAnalysis(historicalData, ticker, duration, unit);
-
-            return ResponseEntity.ok(analysisResult); // Return the analysis result with 200 OK
-        } catch (IOException e) {
-            // Handle API specific errors or general IO errors
-            System.err.println("IOException in analyzeStock for " + ticker + ": " + e.getMessage());
-            e.printStackTrace();
-            StockAnalysisResponse errorResponse1 = new StockAnalysisResponse(); // Uses @NoArgsConstructor
-            errorResponse1.setMessage("Error fetching or processing stock data: " + e.getMessage());
-            errorResponse1.setStatisticallySignificant(false);
-            errorResponse1.setPValue(null); // Or 0.0, depending on desired default for pValue
-            return ResponseEntity.status(HttpStatus.BAD_GATEWAY).body(errorResponse1);
-        } catch (IllegalArgumentException e) {
-            // Handle invalid input errors (e.g., invalid unit)
-            System.err.println("IllegalArgumentException in analyzeStock for " + ticker + ": " + e.getMessage());
-            e.printStackTrace();
-            StockAnalysisResponse errorResponse2 = new StockAnalysisResponse(); // Uses @NoArgsConstructor
-            errorResponse2.setMessage("Invalid input: " + e.getMessage());
-            errorResponse2.setStatisticallySignificant(false);
-            errorResponse2.setPValue(null);
-            return ResponseEntity.status(HttpStatus.BAD_REQUEST).body(errorResponse2);
-        } catch (Exception e) {
-            // Catch any other unexpected errors
-            System.err.println("An unexpected error occurred in analyzeStock for " + ticker + ": " + e.getMessage());
-            StockAnalysisResponse errorResponse3 = new StockAnalysisResponse(); // Uses @NoArgsConstructor
-            errorResponse3.setMessage("An unexpected error occurred: " + e.getMessage());
-            errorResponse3.setStatisticallySignificant(false);
-            errorResponse3.setPValue(null);
-            return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).body(errorResponse3);
-        }
+        // Return the Mono directly. The framework handles the subscription.
+        return financialDataService.getStockAnalysisResponse(ticker, duration, unit, false)
+                // When the Mono completes successfully, map the result to a 200 OK response.
+                .map(ResponseEntity::ok)
+                // Handle potential errors in the reactive chain.
+                // This is a more elegant way to handle errors than a try/catch block.
+                .onErrorResume(IllegalArgumentException.class, e -> {
+                    System.err.println("IllegalArgumentException in analyzeStock for " + ticker + ": " + e.getMessage());
+                    StockAnalysisResponse errorResponse = new StockAnalysisResponse();
+                    errorResponse.setMessage("Invalid input: " + e.getMessage());
+                    errorResponse.setStatisticallySignificant(false);
+                    errorResponse.setPValue(null);
+                    return Mono.just(ResponseEntity.status(HttpStatus.BAD_REQUEST).body(errorResponse));
+                })
+                .onErrorResume(Exception.class, e -> {
+                    System.err.println("An unexpected error occurred in analyzeStock for " + ticker + ": " + e.getMessage());
+                    StockAnalysisResponse errorResponse = new StockAnalysisResponse();
+                    errorResponse.setMessage("An unexpected error occurred: " + e.getMessage());
+                    errorResponse.setStatisticallySignificant(false);
+                    errorResponse.setPValue(null);
+                    return Mono.just(ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).body(errorResponse));
+                });
     }
 
     /**

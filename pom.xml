@@ -35,6 +35,17 @@
         <artifactId>google-cloud-firestore</artifactId>
         <version>3.31.9</version> <!-- Check for the latest stable version on Maven Central -->
     </dependency>
+      <dependency>
+          <groupId>io.projectreactor</groupId>
+          <artifactId>reactor-core</artifactId>
+          <version>3.8.0-M5</version> <!-- Use the latest stable version -->
+      </dependency>
+
+      <dependency>
+          <groupId>org.json</groupId>
+          <artifactId>json</artifactId>
+          <version>20250517</version>
+      </dependency>
 
     <dependency>
       <groupId>org.springframework.boot</groupId>

@@ -1,5 +1,6 @@
 package com.tradrbackend.service;
 
+import java.io.IOException;
 import java.math.BigDecimal;
 import java.math.RoundingMode;
 import java.time.LocalDate;
@@ -10,7 +11,9 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.stream.Collectors;
+import java.util.stream.IntStream;
 
+import com.tradrbackend.model.TechnicalIndicators;
 import org.springframework.stereotype.Service;
 
 import com.tradrbackend.model.HistoricalPrice;
@@ -28,8 +31,18 @@ public class StockAnalyzerService {
     private static final int MACD_SIGNAL_PERIOD = 9;
     private static final int BOLLINGER_BAND_PERIOD = 20;
     private static final int BOLLINGER_BAND_STD_DEV = 2; // Standard deviations for Bollinger Bands
+    private final RandomForestPredictionService randomForestPredictionService;
+    private final RegressionPredictionService regressionPredictionService;
 
-        /**
+    public StockAnalyzerService(
+            RandomForestPredictionService randomForestPredictionService,
+            RegressionPredictionService regressionPredictionService
+    ) {
+        this.randomForestPredictionService = randomForestPredictionService;
+        this.regressionPredictionService = regressionPredictionService;
+    }
+
+    /**
      * Performs comprehensive stock analysis including statistical significance,
      * technical indicator calculations, and signal scoring.
      *
@@ -38,79 +51,127 @@ public class StockAnalyzerService {
      * @param unit The user-specified duration unit for statistical analysis (e.g., "day", "month").
      * @return A StockAnalysisResponse object containing all analysis results.
      */
-    public StockAnalysisResponse performStockAnalysis(Map<LocalDate, BigDecimal> historicalData, String ticker, int duration, String unit) {
-        StockAnalysisResponse response = new StockAnalysisResponse();
-        response.setIndicatorValues(new LinkedHashMap<String, Double>()); // Initialize map
-        response.setReceivedDurationValue(duration); // Set received duration
-        response.setReceivedDurationUnit(unit); // Set received unit
-
-        if (historicalData == null || historicalData.isEmpty()) {
-            response.setMessage("No historical data available for analysis.");
-            response.setError("No data");
-            response.setStatisticallySignificant(false);
-            return response;
-        }
-
-                // Convert the full map of historical data into a List of HistoricalPrice DTOs for the response
-        List<HistoricalPrice> historicalPriceList = historicalData.entrySet().stream()
-                .map(entry -> new HistoricalPrice(entry.getKey(), entry.getValue().doubleValue()))
-                // --- FIX IS HERE ---
-                // Sort by the 'date' field of the HistoricalPrice object
-                .sorted(Comparator.comparing(HistoricalPrice::getDate)) // Corrected Comparator
-                .collect(Collectors.toList());
-
+    public StockAnalysisResponse performStockAnalysis(Map<LocalDate, BigDecimal> historicalData,
+                                                      StockAnalysisResponse response,
+                                                      TechnicalIndicators indicators,
+                                                      int duration,
+                                                      String unit,
+                                                      boolean useRegressionCoefficientModel
+    ) throws IOException, InterruptedException {
+        List<HistoricalPrice> historicalPriceList = getHistoricalPrices(historicalData);
         response.setHistoricalPrices(historicalPriceList); // Set the historical prices in the response
-
         // Use a list of only the *prices* (BigDecimals) for calculations, maintaining original order
         List<BigDecimal> prices = historicalPriceList.stream()
                                     .map(hp -> BigDecimal.valueOf(hp.getClose()))
                                     .collect(Collectors.toList());
         List<LocalDate> dates = historicalPriceList.stream()
                                    .map(HistoricalPrice::getDate)
-                                   .collect(Collectors.toList());
+                                   .toList();
 
-        // Ensure enough data for analysis
-        if (prices.size() < 2) {
-            response.setMessage("Not enough data for meaningful analysis (less than 2 data points).");
-            response.setError("Insufficient data");
-            response.setStatisticallySignificant(false);
+        if (!isPricesValid(prices, response)) {
+            return response;
+        }
+
+        LocalDate endDate = dates.get(dates.size() - 1);
+        LocalDate startDateForStats = getStartDateForStats(endDate, duration, unit, response);
+        if (!isStartDateValid(response, startDateForStats, unit)) {
             return response;
         }
 
         // Set latest price and received ticker early
         BigDecimal latestPriceBd = prices.get(prices.size() - 1);
         response.setLatestPrice(latestPriceBd.doubleValue());
-        response.setReceivedTicker(ticker); // Placeholder for ticker, ideally passed in
+        indicators.setLatestClosePrice(latestPriceBd.doubleValue());
 
+        calculateAndSetIndicators(historicalData, response, indicators, startDateForStats, endDate, duration, unit,
+                prices, latestPriceBd);
+        performPredictionAndScoring(response, indicators, useRegressionCoefficientModel);
+        response.setIndicators(indicators); // Set the new object in the response
 
-        // --- 1. Enhanced Statistical Significance ---
-        // Filter historical data to the user-specified period for statistical analysis
-        LocalDate endDate = dates.get(dates.size() - 1);
-        LocalDate startDateForStats;
-        switch (unit.toLowerCase()) {
-            case "day":
-                startDateForStats = endDate.minusDays(duration - 1);
-                break;
-            case "week":
-                startDateForStats = endDate.minusWeeks(duration - 1);
-                break;
-            case "month":
-                startDateForStats = endDate.minusMonths(duration - 1);
-                break;
-            case "year":
-                startDateForStats = endDate.minusYears(duration - 1);
-                break;
-            default:
-                response.setMessage("Invalid duration unit for statistical analysis: " + unit);
-                response.setError("Invalid Unit");
-                response.setStatisticallySignificant(false);
-                return response;
+        return response;
+    }
+
+    // currently useRegressionCoefficientModel is hard-coded as 'false'
+    private void performPredictionAndScoring(StockAnalysisResponse response,
+                                             TechnicalIndicators indicators,
+                                             boolean useRegressionCoefficientModel
+                                             ) throws IOException, InterruptedException {
+        if (useRegressionCoefficientModel) {
+            regressionPredictionService.makePrediction(indicators, response);
+        } else {
+            RandomForestPredictionService.RandomForestPredictionResponse predictionResponse = randomForestPredictionService.makePrediction(indicators);
+            indicators.setProbability(predictionResponse.getProbability());
+            response.setSignalScore(predictionResponse.getPrediction());
         }
+    }
+
+    private List<HistoricalPrice> getHistoricalPrices(Map<LocalDate, BigDecimal> historicalData) {
+        // Convert the full map of historical data into a List of HistoricalPrice DTOs for the response
+        return historicalData.entrySet().stream()
+                .map(entry -> new HistoricalPrice(entry.getKey(), entry.getValue().doubleValue()))
+                // Sort by the 'date' field of the HistoricalPrice object
+                .sorted(Comparator.comparing(HistoricalPrice::getDate))
+                .collect(Collectors.toList());
+    }
+
+    private LocalDate getStartDateForStats(LocalDate endDate, int duration, String unit, StockAnalysisResponse response) {
+        return switch (unit.toLowerCase()) {
+            case "day" -> endDate.minusDays(duration - 1);
+            case "week" -> endDate.minusWeeks(duration - 1);
+            case "month" -> endDate.minusMonths(duration - 1);
+            case "year" -> endDate.minusYears(duration - 1);
+            default -> null;
+        };
+    }
+
+    private boolean isPricesValid(List<BigDecimal> prices, StockAnalysisResponse response) {
+        if (prices.size() < 2) {
+            response.setMessage("Not enough data for meaningful analysis (less than 2 data points).");
+            response.setError("Insufficient data");
+            response.setStatisticallySignificant(false);
+            return false;
+        }
+        return true;
+    }
+
+    private boolean isStartDateValid(StockAnalysisResponse response, LocalDate startDateForStats, String unit) {
+        if (startDateForStats == null) {
+            response.setMessage("Invalid duration unit for statistical analysis: " + unit);
+            response.setError("Invalid Unit");
+            response.setStatisticallySignificant(false);
+            return false;
+        }
+        return true;
+    }
+
+    private void calculateAndSetIndicators(Map<LocalDate, BigDecimal> historicalData,
+                                             StockAnalysisResponse response,
+                                             TechnicalIndicators indicators,
+                                             LocalDate startDateForStats,
+                                             LocalDate endDate,
+                                             int duration,
+                                             String unit,
+                                             List<BigDecimal> prices,
+                                             BigDecimal latestPriceBd) {
+        setBasicStats(historicalData, response, startDateForStats, endDate, duration, unit, latestPriceBd, indicators);
+        setIndicators(indicators, prices, latestPriceBd);
+    }
+
+    private void setBasicStats(Map<LocalDate, BigDecimal> historicalData,
+                               StockAnalysisResponse response,
+                               LocalDate startDateForStats,
+                               LocalDate endDate,
+                               int duration,
+                               String unit,
+                               BigDecimal latestPriceBd,
+                               TechnicalIndicators indicators) {
 
         List<BigDecimal> pricesForStatisticalAnalysis = historicalData.entrySet().stream()
                 .filter(entry -> !entry.getKey().isBefore(startDateForStats) && !entry.getKey().isAfter(endDate))
                 .map(Map.Entry::getValue)
                 .collect(Collectors.toList());
+
+        BigDecimal percentageChangeFromMean = BigDecimal.ZERO;
 
         if (pricesForStatisticalAnalysis.size() < 2) {
             response.setMessage("Not enough data for statistical analysis over the specified period (" + duration + " " + unit + ").");
@@ -120,18 +181,21 @@ public class StockAnalyzerService {
             BigDecimal meanPrice = calculateMean(pricesForStatisticalAnalysis);
             BigDecimal stdDev = calculateStandardDeviation(pricesForStatisticalAnalysis, meanPrice);
 
-            BigDecimal percentageChangeFromMean = BigDecimal.ZERO;
+
             if (meanPrice.compareTo(BigDecimal.ZERO) != 0) {
                 percentageChangeFromMean = latestPriceBd.subtract(meanPrice)
-                                                        .divide(meanPrice, 4, RoundingMode.HALF_UP)
-                                                        .multiply(new BigDecimal(100));
+                        .divide(meanPrice, 4, RoundingMode.HALF_UP)
+                        .multiply(new BigDecimal(100));
             }
+
+            double percentChangeFromMeanDouble = percentageChangeFromMean.doubleValue();
+            indicators.setPercentageChangeFromMean(percentChangeFromMeanDouble);
 
             // Define "statistical significance" based on a combination of factors:
             // 1. A significant percentage change from the mean over the period (e.g., > 5%)
             // 2. The latest price being a certain number of standard deviations away from the mean (e.g., > 1.5 std dev)
-            boolean isSignificantByPercent = Math.abs(percentageChangeFromMean.doubleValue()) > SIGNIFICANCE_THRESHOLD_PERCENT; // Example: 5% change
-            
+            boolean isSignificantByPercent = Math.abs(percentChangeFromMeanDouble) > SIGNIFICANCE_THRESHOLD_PERCENT; // Example: 5% change
+
             boolean isSignificantByStdDev = false;
             if (stdDev.compareTo(BigDecimal.ZERO) != 0) {
                 BigDecimal zScore = latestPriceBd.subtract(meanPrice).divide(stdDev, 2, RoundingMode.HALF_UP);
@@ -141,7 +205,7 @@ public class StockAnalyzerService {
             boolean finalIsSignificant = isSignificantByPercent || isSignificantByStdDev;
 
             String statisticalMessage = String.format("Latest price ($%.2f) vs. mean ($%.2f) over %d %s(s): %.2f%% change. Std Dev: %.2f.",
-                    latestPriceBd.doubleValue(), meanPrice.doubleValue(), duration, unit, percentageChangeFromMean.doubleValue(), stdDev.doubleValue());
+                    latestPriceBd.doubleValue(), meanPrice.doubleValue(), duration, unit, percentChangeFromMeanDouble, stdDev.doubleValue());
 
             // Add a note if the actual data used is less than the requested period
             long requestedDays = convertDurationToDays(duration, unit);
@@ -153,60 +217,122 @@ public class StockAnalyzerService {
             response.setStatisticallySignificant(finalIsSignificant);
             response.setPValue(null); // Still no p-value calculated in this simplified example
         }
+    }
 
+    private void setIndicators(TechnicalIndicators indicators, List<BigDecimal> prices, BigDecimal latestPriceBd
+    ) {
+        setAtr(indicators, prices);
+        setSma(indicators, prices);
+        setEma(indicators, prices);
+        setRsi(indicators, prices);
+        setMacd(indicators, prices);
+        setBollingerBand(indicators, prices, latestPriceBd);
+    }
 
-        // --- 2. Technical Indicator Calculations ---
-        // Ensure latestPrice is set, as it might be used by indicator signal methods
-        response.setLatestPrice(latestPriceBd.doubleValue());
+    /**
+     * Calculates the Average True Range (ATR) for a list of prices.
+     * ATR is a measure of market volatility. We'll use a simplified calculation
+     * for demonstration, assuming the 'prices' list contains the closing prices.
+     * A more robust calculation would require high and low prices as well.
+     *
+     * @param indicators The TechnicalIndicators object to update.
+     * @param prices The list of closing prices.
+     */
+    private void setAtr(TechnicalIndicators indicators, List<BigDecimal> prices) {
+        final int atrPeriod = 14;
 
-        Map<String, Double> indicatorValues = new LinkedHashMap<>();
-
-        // SMA 50
-        if (prices.size() >= 50) {
-            BigDecimal sma50 = calculateSMA(prices, 50);
-            indicatorValues.put("SMA50", sma50.doubleValue());
+        if (prices.size() < atrPeriod) {
+            indicators.setAtr(null); // Not enough data to calculate ATR
+            return;
         }
-        // SMA 200 - Removed as 100 data points are insufficient
-        // if (prices.size() >= 200) {
-        //     BigDecimal sma200 = calculateSMA(prices, 200);
-        //     indicatorValues.put("SMA200", sma200.doubleValue());
-        // }
 
-        // RSI
+        // For a full ATR calculation, you'd need high, low, and close prices.
+        // For this example, we'll calculate the True Range based on the difference
+        // between consecutive closing prices. This is a simplified approach.
+        List<Double> trueRanges = new ArrayList<>();
+        for (int i = 1; i < prices.size(); i++) {
+            BigDecimal currentPrice = prices.get(i);
+            BigDecimal previousPrice = prices.get(i - 1);
+            Double trueRange = currentPrice.subtract(previousPrice).abs().doubleValue();
+            trueRanges.add(trueRange);
+        }
+
+        // Calculate the average of the last 14 true ranges
+        double sum = IntStream.range(trueRanges.size() - atrPeriod, trueRanges.size())
+                .mapToDouble(trueRanges::get)
+                .sum();
+        double atrValue = sum / atrPeriod;
+        indicators.setAtr(atrValue);
+    }
+
+    private void setSma(TechnicalIndicators indicators, List<BigDecimal> prices) {
+        if (prices.size() >= 50) {
+            BigDecimal sma50 = calculateSma(prices, 50);
+            indicators.setSma50(sma50.doubleValue());
+        }
+    }
+
+    private void setEma(TechnicalIndicators indicators, List<BigDecimal> prices) {
+        final int EMA_PERIOD = 20;
+        if (prices.size() >= EMA_PERIOD) {
+            BigDecimal ema20 = calculateEma(prices, EMA_PERIOD);
+            indicators.setEma20(ema20);
+        }
+    }
+
+    private BigDecimal calculateEma(List<BigDecimal> prices, int period) {
+        if (prices == null || prices.size() < period) {
+            return null;
+        }
+
+        // 1. Initial SMA for the first EMA calculation
+        BigDecimal sma = calculateSma(prices, period);
+        if (sma == null) {
+            return null;
+        }
+
+        BigDecimal ema = sma;
+
+        // 2. Calculate the multiplier
+        BigDecimal multiplier = new BigDecimal("2").divide(
+                new BigDecimal(period + 1), 4, RoundingMode.HALF_UP
+        );
+
+        // 3. Loop through the remaining prices and calculate the EMA
+        List<BigDecimal> remainingPrices = prices.subList(period, prices.size());
+        for (BigDecimal price : remainingPrices) {
+            ema = price.subtract(ema).multiply(multiplier).add(ema);
+        }
+
+        return ema.setScale(4, RoundingMode.HALF_UP);
+    }
+
+    private void setRsi(TechnicalIndicators indicators, List<BigDecimal> prices) {
         if (prices.size() >= RSI_PERIOD) {
             Double rsi = calculateRSI(prices, RSI_PERIOD);
-            indicatorValues.put("RSI", rsi);
-            response.setRsiSignal(getRSISignal(rsi));
+            indicators.setRsi(rsi);
+            indicators.setRsiSignal(getRSISignal(rsi));
         }
+    }
 
-        // MACD
-        if (prices.size() >= MACD_SLOW_PERIOD + MACD_SIGNAL_PERIOD) { // Need enough data for longest EMA + signal
+    private void setMacd(TechnicalIndicators indicators, List<BigDecimal> prices) {
+        if (prices.size() >= MACD_SLOW_PERIOD + MACD_SIGNAL_PERIOD) {
             Map<String, BigDecimal> macdResult = calculateMACD(prices, MACD_FAST_PERIOD, MACD_SLOW_PERIOD, MACD_SIGNAL_PERIOD);
-            indicatorValues.put("MACD_Line", macdResult.get("MACD_Line").doubleValue());
-            indicatorValues.put("MACD_Signal", macdResult.get("MACD_Signal").doubleValue());
-            indicatorValues.put("MACD_Histogram", macdResult.get("MACD_Histogram").doubleValue());
-            response.setMacdSignal(getMACDSignal(macdResult.get("MACD_Line"), macdResult.get("MACD_Signal"), macdResult.get("MACD_Histogram")));
+            indicators.setMacdLine(macdResult.get("MACD_Line").doubleValue());
+            indicators.setMacdSignal(macdResult.get("MACD_Signal").doubleValue());
+            indicators.setMacdHistogram(macdResult.get("MACD_Histogram").doubleValue());
+            indicators.setMacdSignalInterpretation(getMACDSignal(macdResult.get("MACD_Line"), macdResult.get("MACD_Signal"), macdResult.get("MACD_Histogram")));
         }
+    }
 
-        // Bollinger Bands
+    private void setBollingerBand(TechnicalIndicators indicators, List<BigDecimal> prices, BigDecimal latestPriceBd) {
         if (prices.size() >= BOLLINGER_BAND_PERIOD) {
             Map<String, BigDecimal> bbResult = calculateBollingerBands(prices, BOLLINGER_BAND_PERIOD, BOLLINGER_BAND_STD_DEV);
-            indicatorValues.put("BB_Middle", bbResult.get("BB_Middle").doubleValue());
-            indicatorValues.put("BB_Upper", bbResult.get("BB_Upper").doubleValue());
-            indicatorValues.put("BB_Lower", bbResult.get("BB_Lower").doubleValue());
-            response.setBollingerBandSignal(getBollingerBandSignal(latestPriceBd.doubleValue(), bbResult.get("BB_Upper"), bbResult.get("BB_Lower")));
+            indicators.setBbMiddle(bbResult.get("BB_Middle").doubleValue());
+            indicators.setBbUpper(bbResult.get("BB_Upper").doubleValue());
+            indicators.setBbLower(bbResult.get("BB_Lower").doubleValue());
+            indicators.setBollingerBandSignal(getBollingerBandSignal(latestPriceBd.doubleValue(), bbResult.get("BB_Upper"), bbResult.get("BB_Lower")));
         }
-        
-        response.setIndicatorValues(indicatorValues);
-
-        // --- 3. Signal Scoring ---
-        int signalScore = calculateSignalScore(response);
-        String scoreInterpretation = interpretSignalScore(signalScore);
-
-        response.setSignalScore(signalScore);
-        response.setScoreInterpretation(scoreInterpretation);
-
-        return response;
     }
 
     // --- Statistical Calculation Helper Methods ---
@@ -270,7 +396,7 @@ public class StockAnalyzerService {
      * @param period The period for the SMA.
      * @return The SMA value.
      */
-    private BigDecimal calculateSMA(List<BigDecimal> prices, int period) {
+    private BigDecimal calculateSma(List<BigDecimal> prices, int period) {
         if (prices.size() < period) {
             return BigDecimal.ZERO; // Not enough data
         }
@@ -292,7 +418,7 @@ public class StockAnalyzerService {
             return BigDecimal.ZERO;
         }
         BigDecimal multiplier = new BigDecimal(2).divide(new BigDecimal(period + 1), 4, RoundingMode.HALF_UP);
-        BigDecimal ema = calculateSMA(prices.subList(0, period), period); // Initial SMA for first EMA
+        BigDecimal ema = calculateSma(prices.subList(0, period), period); // Initial SMA for first EMA
 
         for (int i = period; i < prices.size(); i++) {
             ema = prices.get(i).subtract(ema).multiply(multiplier).add(ema);
@@ -437,7 +563,7 @@ public class StockAnalyzerService {
             return result;
         }
 
-        BigDecimal middleBand = calculateSMA(prices, period);
+        BigDecimal middleBand = calculateSma(prices, period);
 
         // Calculate standard deviation over the last 'period' prices
         List<BigDecimal> lastPeriodPrices = prices.subList(prices.size() - period, prices.size());
@@ -518,21 +644,132 @@ public class StockAnalyzerService {
      * @param response The StockAnalysisResponse containing indicator values and signals.
      * @return An integer score.
      */
-    private int calculateSignalScore(StockAnalysisResponse response) {
+    private int calculateSignalScore(
+            BigDecimal latestPriceBd,
+            TechnicalIndicators indicators
+    ) {
         int totalScore = 0;
-
-        Double rsi = response.getIndicatorValues().get("RSI");
-        BigDecimal macdLine = response.getIndicatorValues().containsKey("MACD_Line") ? BigDecimal.valueOf(response.getIndicatorValues().get("MACD_Line")) : null;
-        BigDecimal macdSignal = response.getIndicatorValues().containsKey("MACD_Signal") ? BigDecimal.valueOf(response.getIndicatorValues().get("MACD_Signal")) : null;
-        BigDecimal macdHistogram = response.getIndicatorValues().containsKey("MACD_Histogram") ? BigDecimal.valueOf(response.getIndicatorValues().get("MACD_Histogram")) : null;
-        Double latestPrice = response.getLatestPrice();
-        BigDecimal bbUpper = response.getIndicatorValues().containsKey("BB_Upper") ? BigDecimal.valueOf(response.getIndicatorValues().get("BB_Upper")) : null;
-        BigDecimal bbLower = response.getIndicatorValues().containsKey("BB_Lower") ? BigDecimal.valueOf(response.getIndicatorValues().get("BB_Lower")) : null;
-        BigDecimal sma50 = response.getIndicatorValues().containsKey("SMA50") ? BigDecimal.valueOf(response.getIndicatorValues().get("SMA50")) : null;
-        //BigDecimal sma200 = response.getIndicatorValues().containsKey("SMA200") ? BigDecimal.valueOf(response.getIndicatorValues().get("SMA200")) : null; // Removed SMA200
-
-
         // RSI Scoring (Max ~30 points)
+        totalScore = applyRsi(indicators, totalScore);
+        totalScore = applyMacd(indicators, totalScore);
+        totalScore = applyBollingerBands(indicators, totalScore, latestPriceBd);
+        totalScore = applySma(indicators, totalScore, latestPriceBd);
+        totalScore = applyVolume(indicators, totalScore);
+        totalScore = applyATR(indicators, totalScore);
+        totalScore = applyVolatility(indicators, totalScore);
+        totalScore = applySentiment(indicators, totalScore);
+
+        return normalizeScore(totalScore);
+    }
+
+    private int normalizeScore(int totalScore) {
+        // --- NORMALIZATION
+        // Normalize the score from its original range of -35 to 95 to a clean 0-100 scale.
+        // Formula: (score - min) / (max - min) * 100
+        // (totalScore - (-35)) / (95 - (-35)) * 100 = (totalScore + 35) / 130 * 100
+        double normalizedScore = ((double) totalScore + 35.0) / 145.0 * 100.0;
+
+        // Return the rounded integer value
+        return (int) Math.round(normalizedScore);
+    }
+
+    private int applyVolatility(TechnicalIndicators indicators, int totalScore) {
+        // --- Volatility Scoring
+        // Penalize for high volatility, as it indicates higher risk
+        if (indicators.getVolatility() != null && indicators.getVolatility() > 0.1) {
+            totalScore += 5;
+        }
+        return totalScore;
+    }
+
+    private int applyATR(TechnicalIndicators indicators, int totalScore) {
+        // --- NEW! Volatility Scoring for Short-Term Trading (Max 10 points) ---
+        // Short-term traders want volatility, so we add points for high ATR (Average True Range).
+        // The ATR value depends on the stock, so these thresholds may need tuning.
+        Double atr = indicators.getAtr();
+        if (atr != null) {
+            if (atr > 2.0) { // Example threshold for high volatility
+                totalScore += 10;
+            } else if (atr > 1.0) { // Example threshold for moderate volatility
+                totalScore += 5;
+            }
+        }
+        return totalScore;
+    }
+
+    private int applyVolume(TechnicalIndicators indicators, int totalScore) {
+        // --- Volume Scoring
+        // Add points for high trading volume (e.g., above 100 million)
+        if (indicators.getVolume() != null && indicators.getVolume() > 100000000) {
+            totalScore += 5;
+        }
+        return totalScore;
+    }
+
+    private int applySentiment(TechnicalIndicators indicators, int totalScore) {
+        // --- NEW scoring logic for Volume, Volatility, and Sentiment using the new DTO ---
+        Double sentiment = indicators.getSentiment();
+        if (sentiment != null) {
+            // Apply scoring based on the AlphaVantage 5-tier definition
+            if (sentiment >= 0.35) {
+                // Bullish
+                totalScore += 10;
+            } else if (sentiment >= 0.15) {
+                // Somewhat-Bullish
+                totalScore += 5;
+            } else if (sentiment <= -0.35) {
+                // Bearish
+                totalScore -= 10;
+
+            } else if (sentiment <= -0.15) {
+                // Somewhat-Bearish
+                totalScore -= 5;
+            }
+            // Neutral sentiment (-0.15 < x < 0.15) adds no points, which is the desired outcome.
+        }
+        return totalScore;
+    }
+
+    private int applySma(TechnicalIndicators indicators, int totalScore, BigDecimal latestPriceBd) {
+        // Additional Scoring: Price vs. Moving Averages (Example)
+        Double sma50 = indicators.getSma50();
+        if (latestPriceBd != null) {
+            if (sma50 != null && latestPriceBd.compareTo(BigDecimal.valueOf(sma50)) > 0) {
+                totalScore += 5; // Price above 50-day SMA (bullish)
+            }
+        }
+        return totalScore;
+    }
+
+    private int applyBollingerBands(TechnicalIndicators indicators, int totalScore, BigDecimal latestPriceBd) {
+        // Bollinger Band Scoring (Max 20 points)
+        Double bbUpper = indicators.getBbUpper();
+        Double bbLower = indicators.getBbLower();
+        if (latestPriceBd != null && bbUpper != null && bbLower != null) {
+            if (latestPriceBd.compareTo(BigDecimal.valueOf(bbUpper)) > 0) {
+                totalScore -= 20; // Breakout above upper band is a strong sell signal
+            } else if (latestPriceBd.compareTo(BigDecimal.valueOf(bbLower)) < 0) {
+                totalScore += 20; // Breakout below lower band is a strong buy signal
+            }
+        }
+        return totalScore;
+    }
+
+    private int applyMacd(TechnicalIndicators indicators, int totalScore) {
+        // MACD Scoring (Max 25 points)
+        Double macdLine = indicators.getMacdLine();
+        Double macdSignal = indicators.getMacdSignal();
+        if (macdLine != null && macdSignal != null) {
+            BigDecimal macdDelta = BigDecimal.valueOf(macdLine).subtract(BigDecimal.valueOf(macdSignal));
+            if (macdDelta.compareTo(BigDecimal.ZERO) > 0) {
+                totalScore += Math.min(25, macdDelta.multiply(new BigDecimal(100)).intValue()); // Cap at 25
+            }
+        }
+        return totalScore;
+    }
+
+    private int applyRsi(TechnicalIndicators indicators, int totalScore) {
+        Double rsi = indicators.getRsi();
         if (rsi != null) {
             if (rsi > 50 && rsi < 70) {
                 totalScore += (int) ((rsi - 50) * 1.5); // Max 30
@@ -540,37 +777,6 @@ public class StockAnalyzerService {
                 totalScore += 15; // Oversold bounce potential
             }
         }
-
-        // MACD Scoring (Max 25 points)
-        if (macdLine != null && macdSignal != null) {
-            BigDecimal macdDelta = macdLine.subtract(macdSignal);
-            if (macdDelta.compareTo(BigDecimal.ZERO) > 0) {
-                totalScore += Math.min(25, macdDelta.multiply(new BigDecimal(100)).intValue()); // Cap at 25
-            }
-        }
-
-        // Bollinger Band Scoring (Max 20 points)
-        if (latestPrice != null && bbUpper != null && bbLower != null) {
-            BigDecimal currentPriceBd = BigDecimal.valueOf(latestPrice);
-            if (currentPriceBd.compareTo(bbUpper) > 0) {
-                totalScore += 20; // Breakout
-            } else if (currentPriceBd.compareTo(bbLower) < 0) {
-                totalScore += 10; // Possible bounce
-            }
-        }
-
-        // Additional Scoring: Price vs. Moving Averages (Example)
-        if (latestPrice != null) {
-            BigDecimal currentPriceBd = BigDecimal.valueOf(latestPrice);
-            if (sma50 != null && currentPriceBd.compareTo(sma50) > 0) {
-                totalScore += 5; // Price above 50-day SMA (bullish)
-            }
-            // Removed SMA200 scoring
-            // if (sma200 != null && currentPriceBd.compareTo(sma200) > 0) {
-            //     totalScore += 10; // Price above 200-day SMA (stronger bullish sign)
-            // }
-        }
-
         return totalScore;
     }
 
@@ -580,72 +786,39 @@ public class StockAnalyzerService {
      * @return Interpretation string.
      */
     private String interpretSignalScore(int score) {
-        if (score >= 40) return "Strong Buy";
-        if (score >= 20) return "Buy";
-        if (score >= 0) return "Neutral";
-        if (score >= -20) return "Sell"; // Assuming negative scores are possible if you add bearish points
+        if (score >= 80) {
+            return "Strong Buy";
+        }
+        if (score >= 60) {
+            return "Buy";
+        }
+        if (score >= 40) {
+            return "Neutral";
+        }
+        if (score >= 20) {
+            return "Sell";
+        }
+        // Any score below 20 is considered a strong sell signal
         return "Strong Sell";
     }
 }
 
-    /**
-     * Calculates if the latest price is significantly different from the mean
-     * over a given historical period.
-     *
-     * @param historicalPrices A map of date to adjusted close price for the period.
-     * @return A descriptive string indicating significance.
-     */
-    // public StockAnalysisResponse performStockAnalysis(Map<LocalDate, BigDecimal> historicalPrices) {
-    //     if (historicalPrices == null || historicalPrices.isEmpty()) {
-    //         return new StockAnalysisResponse("Cannot perform analysis: No historical data available.", false, null);
-    //     }
-
-    //     List<BigDecimal> prices = historicalPrices.values().stream()
-    //             .collect(Collectors.toList());
-
-    //     // Get the latest price (assuming TreeMap gives sorted dates, last entry is latest)
-    //     LocalDate latestDate = historicalPrices.keySet().stream()
-    //             .max(Comparator.naturalOrder())
-    //             .orElseThrow(() -> new NoSuchElementException("No latest date found."));
-    //     BigDecimal latestPrice = historicalPrices.get(latestDate);
+//TODO: clean
+    //    private String interpretSignalScore(int score) {
+//        if (score >= 40) return "Strong Buy";
+//        if (score >= 20) return "Buy";
+//        if (score >= 0) return "Neutral";
+//        if (score >= -20) return "Sell"; // Assuming negative scores are possible if you add bearish points
+//        return "Strong Sell";
+//    }
 
 
-    //     // Calculate the sum and mean
-    //     BigDecimal sum = BigDecimal.ZERO;
-    //     for (BigDecimal price : prices) {
-    //         sum = sum.add(price);
-    //     }
-
-    //     BigDecimal mean = sum.divide(BigDecimal.valueOf(prices.size()), 4, RoundingMode.HALF_UP);
-
-    //     // Calculate percentage difference
-    //     BigDecimal difference = latestPrice.subtract(mean);
-    //     BigDecimal percentageDifference = difference
-    //             .divide(mean, 4, RoundingMode.HALF_UP)
-    //             .multiply(BigDecimal.valueOf(100));
-    //     boolean isStatisticallySignificant;
-    //     String message;
-    //     if (percentageDifference.abs().doubleValue() > SIGNIFICANCE_THRESHOLD_PERCENT) {
-    //         message = String.format("The latest price (%.2f) is significantly %s than the mean (%.2f) over the period. Difference: %.2f%%",
-    //                 latestPrice,
-    //                 percentageDifference.doubleValue() > 0 ? "higher" : "lower",
-    //                 mean,
-    //                 percentageDifference.abs());
-    //             isStatisticallySignificant = true;
-    //     } else {
-    //         message = String.format("The latest price (%.2f) is not significantly different from the mean (%.2f) over the period. Difference: %.2f%%",
-    //                 latestPrice, mean, percentageDifference.abs());
-    //             isStatisticallySignificant = false;
-    //     }
-
-    //     Random rand = new Random();
-    //     Double pValue = rand.nextDouble(); // Generates a random double between 0.0 and 1.0
-    //     // Optional: Make pValue correlate roughly with significance for demo purposes
-    //     if (isStatisticallySignificant && pValue >= 0.05) {
-    //         pValue = rand.nextDouble() * 0.04; // Ensure pValue is low if significant
-    //     } else if (!isStatisticallySignificant && pValue < 0.05) {
-    //         pValue = 0.05 + rand.nextDouble() * 0.94; // Ensure pValue is high if not significant
-    //     }
-
-    //     return new StockAnalysisResponse(message, isStatisticallySignificant, pValue);
-    // }
+// performStockAnalysis() {
+// //         --- 3. Signal Scoring ---
+////        int signalScore = calculateSignalScore(
+////                latestPriceBd,
+////                indicators
+////        );
+////      String scoreInterpretation = interpretSignalScore(signalScore);
+////        response.setScoreInterpretation(scoreInterpretation);
+//}
