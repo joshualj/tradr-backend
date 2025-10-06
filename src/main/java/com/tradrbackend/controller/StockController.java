@@ -10,7 +10,7 @@ import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 
 import com.tradrbackend.response.StockAnalysisResponse;
-import com.tradrbackend.service.AlphaVantageService;
+import com.tradrbackend.service.api.AlphaVantageService;
 import com.tradrbackend.service.DailyStockEvaluatorService;
 import com.tradrbackend.service.StockAnalyzerService;
 import reactor.core.publisher.Mono;

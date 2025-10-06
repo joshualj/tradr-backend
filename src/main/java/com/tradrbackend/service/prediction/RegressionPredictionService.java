@@ -1,7 +1,7 @@
-package com.tradrbackend.service;
+package com.tradrbackend.service.prediction;
 
 import com.tradrbackend.response.StockAnalysisResponse;
-import com.tradrbackend.service.common.PredictionHelperService;
+import com.tradrbackend.service.prediction.common.PredictionHelperService;
 import org.json.JSONObject;
 import com.tradrbackend.model.TechnicalIndicators;
 
@@ -53,7 +53,7 @@ public class RegressionPredictionService {
             double finalScore = probability * 100;
             System.out.printf("Final Stock Score: %.2f / 100\n", finalScore);
             response.setSignalScore((int) finalScore);
-            technicalIndicators.setProbability(probability);
+            response.setProbability(probability);
         } catch (Exception e) {
             e.printStackTrace();
         }

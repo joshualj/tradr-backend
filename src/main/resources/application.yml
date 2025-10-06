@@ -1,0 +1,38 @@
+spring:
+  datasource:
+    url: ${DB_URL}
+    username: ${DB_USER}
+    password: ${DB_PASSWORD}
+
+alphavantage:
+  api:
+    key: ${ALPHA_VANTAGE_API_KEYS_1}
+    key2: ${ALPHA_VANTAGE_API_KEYS_2}
+
+
+finnhub:
+  api:
+    key: ${FINNHUB_API_KEY}
+
+financial:
+  modeling:
+    prep:
+      api:
+        key: ${FMP_API_KEY}
+
+
+  # Optional: Server port (default is 8080)
+server:
+  port: 8080
+
+firebase:
+  service-account-path: ${FIREBASE_SA_PATH}
+
+logging:
+  level:
+    org:
+      springframework:
+        web:
+          client: DEBUG
+    com:
+      tradrbackend: DEBUG

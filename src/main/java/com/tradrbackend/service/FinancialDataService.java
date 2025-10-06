@@ -3,6 +3,9 @@ package com.tradrbackend.service;
 import com.tradrbackend.model.AlphaVantageData;
 import com.tradrbackend.model.TechnicalIndicators;
 import com.tradrbackend.response.StockAnalysisResponse;
+import com.tradrbackend.service.api.AlphaVantageService;
+import com.tradrbackend.service.api.FinnHubService;
+import com.tradrbackend.service.api.FmpService;
 import org.springframework.stereotype.Service;
 import reactor.core.publisher.Mono;
 import reactor.core.scheduler.Schedulers;
@@ -21,11 +24,17 @@ public class FinancialDataService {
 
     private final AlphaVantageService alphaVantageService;
     private final FinnHubService finnHubService;
+    private final SimFinDataService simFinDataService;
+    private final FmpService fmpService;
     private final StockAnalyzerService stockAnalyzer;
 
-    public FinancialDataService(AlphaVantageService alphaVantageService, FinnHubService finnHubService, StockAnalyzerService stockAnalyzer) {
+    public FinancialDataService(AlphaVantageService alphaVantageService, FinnHubService finnHubService,
+                                StockAnalyzerService stockAnalyzer, SimFinDataService simFinDataService,
+                                FmpService fmpService) {
+        this.simFinDataService = simFinDataService;
         this.alphaVantageService = alphaVantageService;
         this.finnHubService = finnHubService;
+        this.fmpService = fmpService;
         this.stockAnalyzer = stockAnalyzer;
     }
 
@@ -46,26 +55,54 @@ public class FinancialDataService {
                 });
 //         --- END CONSOLIDATED API CALL ---
 
-        // Create a Mono for fetching news sentiment from AlphaVantage.
-        Mono<Double> newsSentimentMono = alphaVantageService.getNewsSentiment(ticker)
-                .onErrorResume(RuntimeException.class, e -> {
-                    System.err.println("Error fetching news sentiment: " + e.getMessage());
-                    return Mono.error(new RuntimeException("Error fetching news sentiment.", e));
-                });
+        Mono<Double> sp500PeProxyMono = alphaVantageService.getSp500PeProxy();
+
+        Mono<Double> newsSentimentMono = Mono.just(0.0);
+
+        // Commenting out for now because News Sentiment is not currently used by models
+//        Mono<Double> newsSentimentMono = alphaVantageService.getNewsSentiment(ticker)
+//                .onErrorResume(RuntimeException.class, e -> {
+//                    System.err.println("Error fetching news sentiment: " + e.getMessage());
+//                    return Mono.error(new RuntimeException("Error fetching news sentiment.", e));
+//                });
 
         // Step 3: Concurrently fetch data from other services.
         // We assume FinnHubService returns a reactive Mono.
         Mono<BigDecimal> marketCapMono = finnHubService.getMarketCapitalization(ticker)
                 .onErrorMap(IOException.class, e -> new RuntimeException("Error fetching market capitalization", e));
 
+        Mono<Double> peRatioMono = finnHubService.getTtmEps(ticker)
+                .onErrorMap(IOException.class, e -> new RuntimeException("Error fetching TTM EPS", e));
+
+//        Mono<Double> peRatioMono = fmpService.getPriceToEarningsRatioTTM(ticker)
+//                .onErrorMap(IOException.class, e -> new RuntimeException("Error fetching TTM PE", e));
+
+        Mono<Long> sharesOutstandingMono = fmpService.getOutstandingShares(ticker)
+                .onErrorMap(IOException.class, e -> new RuntimeException("Error fetching shares outstanding", e));
+
+        //TODO: for up-to-date data, convert to API call rather than fetching from DB call - simFinData service is not yet auto-updated
+        Mono<BigDecimal> latestNetIncomeMono = simFinDataService.getLatestNetIncomeCommon(ticker)
+                .onErrorMap(IOException.class, e -> new RuntimeException("Error fetching latest volume", e));
+
         // Step 4: Combine all Monos and perform the final analysis.
         // We use Mono.zip to wait for all the API calls to complete.
-        return Mono.zip(alphaVantageDataMono, marketCapMono, newsSentimentMono)
+        return Mono.zip(alphaVantageDataMono,
+                        marketCapMono,
+                        newsSentimentMono,
+                        latestNetIncomeMono,
+                        peRatioMono,
+                        sharesOutstandingMono,
+                        sp500PeProxyMono)
                 .flatMap(tuple -> {
                     Map<LocalDate, BigDecimal> historicalData = tuple.getT1().getHistoricalPrices();
                     BigDecimal latestVolume = tuple.getT1().getLatestVolume();
+                    List<BigDecimal> volumes20Day = tuple.getT1().getVolumes20Day();
                     BigDecimal marketCap = tuple.getT2();
                     Double sentiment = tuple.getT3(); // Extract the sentiment value
+                    BigDecimal latestNetIncome = tuple.getT4();
+                    double peRatioTtm = tuple.getT5();
+                    double sharesOutstanding = tuple.getT6();
+                    double sp500PeProxy = tuple.getT7();
 
                     // Chain the reactive volatility calculation here.
                     // flatMap is used to switch from Mono<Double> to the final Mono<StockAnalysisResponse>.
@@ -79,17 +116,13 @@ public class FinancialDataService {
                                         volatility,
                                         marketCap.doubleValue(),
                                         latestVolume.doubleValue(),
-                                        sentiment
+                                        volumes20Day,
+                                        sentiment,
+                                        latestNetIncome,
+                                        peRatioTtm,
+                                        sharesOutstanding,
+                                        sp500PeProxy
                                 );
-                                //TODO: clean
-                                // The original code had a getLatestVolume call here, but it wasn't
-                                // included in the Mono.zip. We can add a placeholder value.
-                                // If alphaVantageService.getLatestVolume also returns a Mono,
-                                // we would zip it here as well.
-//                                response.setVolatility(volatility);
-//                                response.setVolume(latestVolume.doubleValue());
-//                                response.setMarketCap(marketCap.doubleValue());
-//                                response.setSentiment(sentiment); // Set the new sentiment value
 
                                 // Call the StockAnalyzerService with the combined data.
                                 try {
@@ -202,21 +235,3 @@ public class FinancialDataService {
         }).subscribeOn(Schedulers.boundedElastic()); // Run this CPU-intensive task on a separate thread pool.
     }
 }
-//TODO: clean
-// Step 2: Create a Mono for the blocking AlphaVantage call.
-// We wrap the blocking call in a Mono and run it on a dedicated thread pool
-// to prevent blocking the main event loop. This is the key to a reactive service.
-// --- CONSOLIDATED API CALL ---
-
-//        Mono<LinkedHashMap<LocalDate, BigDecimal>> historicalDataMono = alphaVantageService.getHistoricalAdjustedPrices(ticker)
-//                .onErrorResume(RuntimeException.class, e -> {
-//                    System.err.println("Error fetching historical data: " + e.getMessage());
-//                    // This onErrorResume is now correctly handling errors from the upstream Mono.
-//                    return Mono.error(new RuntimeException("Error fetching historical data.", e));
-//                });
-//
-//        Mono<BigDecimal> latestVolumeMono = alphaVantageService.getLatestVolume(ticker)
-//                .onErrorResume(RuntimeException.class, e -> {
-//                    System.err.println("Error fetching latest volume: " + e.getMessage());
-//                    return Mono.error(new RuntimeException("Error fetching latest volume.", e));
-//                });

@@ -7,6 +7,7 @@ import lombok.NoArgsConstructor;
 import java.math.BigDecimal;
 import java.time.LocalDate;
 import java.util.LinkedHashMap;
+import java.util.List;
 
 @Data
 @AllArgsConstructor
@@ -14,4 +15,5 @@ import java.util.LinkedHashMap;
 public class AlphaVantageData {
     LinkedHashMap<LocalDate, BigDecimal> historicalPrices;
     BigDecimal latestVolume;
+    List<BigDecimal> volumes20Day;
 }

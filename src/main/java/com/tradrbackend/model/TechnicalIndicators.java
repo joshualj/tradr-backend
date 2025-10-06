@@ -5,6 +5,7 @@ import lombok.Data;
 import lombok.NoArgsConstructor;
 
 import java.math.BigDecimal;
+import java.util.List;
 
 /**
  * A data transfer object (DTO) to hold the calculated technical indicator values
@@ -33,18 +34,30 @@ public class TechnicalIndicators {
     private String macdSignalInterpretation; // Renamed to avoid collision
     private String bollingerBandSignal;
 
-    private Double volume;
+    private Double latestVolume;
+    private List<BigDecimal> volume20DayAvg;
     private Double marketCap;
     private Double volatility;
     private Double sentiment;
     private double probability;
     private double latestClosePrice;
+    private BigDecimal latestNetIncome;
+    private double peRatioTtm;
+    private double sharesOutstanding;
+    private double sp500PeProxy;
 
     // Create constructor with volatility, marketCap, latestVolume, and sentiment
-    public TechnicalIndicators(Double volatility, Double marketCap, Double volume, Double sentiment) {
+    public TechnicalIndicators(Double volatility, Double marketCap, Double latestVolume, List<BigDecimal> volume20DayAvg,
+                               Double sentiment, BigDecimal latestNetIncome, double peRatioTtm,
+                               double sharesOutstanding, double sp500PeProxy) {
         this.volatility = volatility;
         this.marketCap = marketCap;
-        this.volume = volume;
+        this.latestVolume = latestVolume;
+        this.volume20DayAvg = volume20DayAvg;
         this.sentiment = sentiment;
+        this.latestNetIncome = latestNetIncome;
+        this.peRatioTtm = peRatioTtm;
+        this.sharesOutstanding = sharesOutstanding;
+        this.sp500PeProxy = sp500PeProxy;
     }
 }

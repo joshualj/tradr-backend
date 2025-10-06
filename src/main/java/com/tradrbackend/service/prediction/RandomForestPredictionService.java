@@ -1,21 +1,28 @@
-package com.tradrbackend.service;
+package com.tradrbackend.service.prediction;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.tradrbackend.model.TechnicalIndicators;
-import com.tradrbackend.response.StockAnalysisResponse;
-import com.tradrbackend.service.common.PredictionHelperService;
+import com.tradrbackend.service.prediction.common.PredictionHelperService;
 
 import java.io.IOException;
 import java.net.URI;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
-import java.util.HashMap;
 import java.util.Map;
 
 // this was an output from Gemini for integrating with the Python API
 public class RandomForestPredictionService {
-    private static final String API_URL = "http://localhost:5000/predict";
+    private static final Map<Integer, String> MODEL_ENDPOINTS = Map.of(
+            7, "/predict/7day",
+            30, "/predict/30day",
+            60, "/predict/60day",
+            180, "/predict/180day",
+            365, "/predict/365day",
+            730, "/predict/730day", // 2 years
+            1460, "/predict/1460day" // 4 years
+    );
+    private static final String API_URL = "http://localhost:5000";
     private final HttpClient httpClient = HttpClient.newHttpClient();
     private final ObjectMapper objectMapper = new ObjectMapper();
     private final PredictionHelperService predictionHelperService;
@@ -68,14 +75,16 @@ public class RandomForestPredictionService {
      * @throws IOException if an I/O error occurs.
      * @throws InterruptedException if the operation is interrupted.
      */
-    public RandomForestPredictionResponse makePrediction(TechnicalIndicators technicalIndicators) throws IOException, InterruptedException {
+    public RandomForestPredictionResponse makePrediction(TechnicalIndicators technicalIndicators, int timeframeDays) throws IOException, InterruptedException {
 
         Map<String, Double> indicatorValues = predictionHelperService.getIndicatorMap(technicalIndicators);
         // Convert the indicator map to a JSON string
         String requestBody = objectMapper.writeValueAsString(indicatorValues);
+        String apiPath = MODEL_ENDPOINTS.getOrDefault(timeframeDays, "/predict/30");
+        String apiUrl = API_URL + apiPath;
 
         HttpRequest request = HttpRequest.newBuilder()
-                .uri(URI.create(API_URL))
+                .uri(URI.create(apiUrl))
                 .header("Content-Type", "application/json")
                 .POST(HttpRequest.BodyPublishers.ofString(requestBody))
                 .build();

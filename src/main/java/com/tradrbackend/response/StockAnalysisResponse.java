@@ -34,14 +34,8 @@ public class StockAnalysisResponse {
     private Double latestPrice; // Current price
     private TechnicalIndicators indicators;
     private Integer signalScore; // e.g., +3, -2
+    private double probability;
     private String scoreInterpretation; // e.g., "Buy", "Strong Sell"
     @JsonProperty("historicalPrices") // Matches the name used in SwiftUI
     private List<HistoricalPrice> historicalPrices;
 }
-
-//TODO: clean
-//private Map<String, Double> indicatorValues; // e.g., {"SMA50": 150.23, "RSI": 65.4}
-//    private String rsiSignal; // e.g., "Oversold", "Neutral", "Overbought", "Rising from Oversold"
-//    private String macdSignal; // e.g., "Bullish Crossover", "Bearish Crossover", "Bullish Trend", "Bearish Trend"
-//    private String bollingerBandSignal;
-//    private FinancialData financialData;

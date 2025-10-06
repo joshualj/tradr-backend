@@ -2,6 +2,7 @@ package com.tradrbackend.config;
 
 import java.io.FileInputStream;
 import java.io.IOException;
+import java.io.InputStream;
 
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.context.annotation.Bean;
@@ -21,17 +22,22 @@ public class FirebaseConfig {
 
     @Bean
     public FirebaseApp initializeFirebase() throws IOException {
-        FileInputStream serviceAccount = new FileInputStream(serviceAccountPath);
+
+        InputStream serviceAccount = getClass().getClassLoader().getResourceAsStream(this.serviceAccountPath);
+
+        // System.out.println is removed to clean up startup logs, but this is
+        // what it would print: "config/tradrfirebaseservice-firebase-adminsdk-fbsvc-d705d704c0.json"
+
+        if (serviceAccount == null) {
+            // Throw a specific error if the file is not found
+            throw new IOException("Firebase Service Account JSON file not found in classpath at: " + this.serviceAccountPath + ". Please ensure it is in the src/main/resources/config/ folder.");
+        }
 
         FirebaseOptions options = FirebaseOptions.builder()
-            .setCredentials(GoogleCredentials.fromStream(serviceAccount))
-            .build();
+                .setCredentials(GoogleCredentials.fromStream(serviceAccount))
+                .build();
 
-        if (FirebaseApp.getApps().isEmpty()) { // Check if already initialized
-            return FirebaseApp.initializeApp(options);
-        } else {
-            return FirebaseApp.getInstance();
-        }
+        return FirebaseApp.getApps().isEmpty() ? FirebaseApp.initializeApp(options) : FirebaseApp.getInstance();
     }
 
     @Bean

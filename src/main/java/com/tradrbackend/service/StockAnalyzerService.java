@@ -4,6 +4,7 @@ import java.io.IOException;
 import java.math.BigDecimal;
 import java.math.RoundingMode;
 import java.time.LocalDate;
+import java.time.temporal.ChronoUnit;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.Comparator;
@@ -14,6 +15,9 @@ import java.util.stream.Collectors;
 import java.util.stream.IntStream;
 
 import com.tradrbackend.model.TechnicalIndicators;
+import com.tradrbackend.service.prediction.RandomForestPredictionService;
+import com.tradrbackend.service.prediction.RegressionPredictionService;
+import com.tradrbackend.service.prediction.XGBoostPredictionService;
 import org.springframework.stereotype.Service;
 
 import com.tradrbackend.model.HistoricalPrice;
@@ -31,16 +35,25 @@ public class StockAnalyzerService {
     private static final int MACD_SIGNAL_PERIOD = 9;
     private static final int BOLLINGER_BAND_PERIOD = 20;
     private static final int BOLLINGER_BAND_STD_DEV = 2; // Standard deviations for Bollinger Bands
-    private final RandomForestPredictionService randomForestPredictionService;
-    private final RegressionPredictionService regressionPredictionService;
+//    private final RandomForestPredictionService randomForestPredictionService;
+//    private final RegressionPredictionService regressionPredictionService;
+    private final XGBoostPredictionService xgBoostPredictionService;
 
     public StockAnalyzerService(
-            RandomForestPredictionService randomForestPredictionService,
-            RegressionPredictionService regressionPredictionService
+            XGBoostPredictionService xgBoostPredictionService
     ) {
-        this.randomForestPredictionService = randomForestPredictionService;
-        this.regressionPredictionService = regressionPredictionService;
+        this.xgBoostPredictionService = xgBoostPredictionService;
     }
+
+//    public StockAnalyzerService(
+//            RandomForestPredictionService randomForestPredictionService,
+//            RegressionPredictionService regressionPredictionService,
+//            XGBoostPredictionService xgBoostPredictionService
+//    ) {
+//        this.randomForestPredictionService = randomForestPredictionService;
+//        this.xgBoostPredictionService = xgBoostPredictionService;
+//        this.regressionPredictionService = regressionPredictionService;
+//    }
 
     /**
      * Performs comprehensive stock analysis including statistical significance,
@@ -85,7 +98,8 @@ public class StockAnalyzerService {
 
         calculateAndSetIndicators(historicalData, response, indicators, startDateForStats, endDate, duration, unit,
                 prices, latestPriceBd);
-        performPredictionAndScoring(response, indicators, useRegressionCoefficientModel);
+        int timeframeDays = (int) ChronoUnit.DAYS.between(startDateForStats, endDate); // Inclusive of both start and end dates
+        performPredictionAndScoring(response, indicators, timeframeDays, useRegressionCoefficientModel);
         response.setIndicators(indicators); // Set the new object in the response
 
         return response;
@@ -94,15 +108,17 @@ public class StockAnalyzerService {
     // currently useRegressionCoefficientModel is hard-coded as 'false'
     private void performPredictionAndScoring(StockAnalysisResponse response,
                                              TechnicalIndicators indicators,
+                                             int timeframeDays,
                                              boolean useRegressionCoefficientModel
                                              ) throws IOException, InterruptedException {
-        if (useRegressionCoefficientModel) {
-            regressionPredictionService.makePrediction(indicators, response);
-        } else {
-            RandomForestPredictionService.RandomForestPredictionResponse predictionResponse = randomForestPredictionService.makePrediction(indicators);
-            indicators.setProbability(predictionResponse.getProbability());
-            response.setSignalScore(predictionResponse.getPrediction());
-        }
+        xgBoostPredictionService.makePrediction(indicators, timeframeDays, response).block(); // Block to wait for completion
+//        if (useRegressionCoefficientModel) {
+//            regressionPredictionService.makePrediction(indicators, response);
+//        } else {
+//            RandomForestPredictionService.RandomForestPredictionResponse predictionResponse = randomForestPredictionService.makePrediction(indicators, timeframeDays);
+//            indicators.setProbability(predictionResponse.getProbability());
+//            response.setSignalScore(predictionResponse.getPrediction());
+//        }
     }
 
     private List<HistoricalPrice> getHistoricalPrices(Map<LocalDate, BigDecimal> historicalData) {
@@ -700,7 +716,7 @@ public class StockAnalyzerService {
     private int applyVolume(TechnicalIndicators indicators, int totalScore) {
         // --- Volume Scoring
         // Add points for high trading volume (e.g., above 100 million)
-        if (indicators.getVolume() != null && indicators.getVolume() > 100000000) {
+        if (indicators.getLatestVolume() != null && indicators.getLatestVolume() > 100000000) {
             totalScore += 5;
         }
         return totalScore;
