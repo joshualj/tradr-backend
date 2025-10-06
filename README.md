@@ -1,11 +1,3 @@
-# To run the backend:
-cd tradr/tradr-backend
-# Then run your Spring Boot command (e.g., mvn spring-boot:run or ./mvnw spring-boot:run)
+# Tradr Backend
 
-# To run the edge service:
-cd tradr/tradr-edge-service
-npm start
-
-# To run the web app:
-cd tradr/tradr-web-app
-npm run dev
+This repository contains the Java / Spring Boot backend for Tradr. It accepts a user-provided stock ticker and timeframe, makes API calls to retrieve fundamental and technical indicators, performs stock analysis, and calls separately-hosted prediction models to provide a user with a score based on the likelihood that the stock will outperform the S\&P 500 over the provided timeframe.
