@@ -9,6 +9,7 @@ import com.tradrbackend.service.api.FmpService;
 import org.springframework.stereotype.Service;
 import reactor.core.publisher.Mono;
 import reactor.core.scheduler.Schedulers;
+import reactor.util.function.Tuple7;
 
 import java.io.IOException;
 import java.math.BigDecimal;
@@ -47,19 +48,35 @@ public class FinancialDataService {
             return Mono.just(createErrorResponse(e.getMessage()));
         }
 
+        Mono<Tuple7<AlphaVantageData, BigDecimal, Double, BigDecimal, Double, Double, Double>> allDataMono =
+                fetchAllRequiredData(ticker);
+
+        return allDataMono
+                .flatMap(tuple -> performAnalysisOnData(
+                        ticker,
+                        duration,
+                        unit,
+                        useRegressionCoefficientModel,
+                        tuple))
+                .onErrorResume(e -> Mono.just(createErrorResponse(e.getMessage())));
+    }
+
+    private Mono<Tuple7<AlphaVantageData, BigDecimal, Double, BigDecimal, Double, Double, Double>>
+        fetchAllRequiredData(String ticker) {
+
+
         //Step 2: Create a single Mono for all Alpha Vantage data.
         Mono<AlphaVantageData> alphaVantageDataMono = alphaVantageService.getAlphaVantageData(ticker)
                 .onErrorResume(RuntimeException.class, e -> {
                     System.err.println("Error fetching Alpha Vantage data: " + e.getMessage());
                     return Mono.error(new RuntimeException("Error fetching Alpha Vantage data.", e));
                 });
-//         --- END CONSOLIDATED API CALL ---
 
         Mono<Double> sp500PeProxyMono = alphaVantageService.getSp500PeProxy();
 
         Mono<Double> newsSentimentMono = Mono.just(0.0);
 
-        // Commenting out for now because News Sentiment is not currently used by models
+//         Commenting out for now because News Sentiment is not currently used by models
 //        Mono<Double> newsSentimentMono = alphaVantageService.getNewsSentiment(ticker)
 //                .onErrorResume(RuntimeException.class, e -> {
 //                    System.err.println("Error fetching news sentiment: " + e.getMessage());
@@ -71,7 +88,7 @@ public class FinancialDataService {
         Mono<BigDecimal> marketCapMono = finnHubService.getMarketCapitalization(ticker)
                 .onErrorMap(IOException.class, e -> new RuntimeException("Error fetching market capitalization", e));
 
-        Mono<Double> peRatioMono = finnHubService.getTtmEps(ticker)
+        Mono<Double> ttmEpsMono = finnHubService.getTtmEps(ticker)
                 .onErrorMap(IOException.class, e -> new RuntimeException("Error fetching TTM EPS", e));
 
 //        Mono<Double> peRatioMono = fmpService.getPriceToEarningsRatioTTM(ticker)
@@ -84,62 +101,115 @@ public class FinancialDataService {
         Mono<BigDecimal> latestNetIncomeMono = simFinDataService.getLatestNetIncomeCommon(ticker)
                 .onErrorMap(IOException.class, e -> new RuntimeException("Error fetching latest volume", e));
 
-        // Step 4: Combine all Monos and perform the final analysis.
-        // We use Mono.zip to wait for all the API calls to complete.
-        return Mono.zip(alphaVantageDataMono,
-                        marketCapMono,
-                        newsSentimentMono,
-                        latestNetIncomeMono,
-                        peRatioMono,
-                        sharesOutstandingMono,
-                        sp500PeProxyMono)
-                .flatMap(tuple -> {
-                    Map<LocalDate, BigDecimal> historicalData = tuple.getT1().getHistoricalPrices();
-                    BigDecimal latestVolume = tuple.getT1().getLatestVolume();
-                    List<BigDecimal> volumes20Day = tuple.getT1().getVolumes20Day();
-                    BigDecimal marketCap = tuple.getT2();
-                    Double sentiment = tuple.getT3(); // Extract the sentiment value
-                    BigDecimal latestNetIncome = tuple.getT4();
-                    double peRatioTtm = tuple.getT5();
-                    double sharesOutstanding = tuple.getT6();
-                    double sp500PeProxy = tuple.getT7();
+        Mono<Double> calculatedPeRatioMono = calculatePeRatioMono(ticker, alphaVantageDataMono, ttmEpsMono);
 
-                    // Chain the reactive volatility calculation here.
-                    // flatMap is used to switch from Mono<Double> to the final Mono<StockAnalysisResponse>.
-                    return calculateVolatility(historicalData)
-                            .flatMap(volatility -> {
-                                StockAnalysisResponse response = new StockAnalysisResponse();
+        return Mono.zip(
+                alphaVantageDataMono,
+                marketCapMono,
+                newsSentimentMono,
+                latestNetIncomeMono,
+                calculatedPeRatioMono.map(Double::doubleValue), // Ensure type consistency if needed
+                sharesOutstandingMono.map(Long::doubleValue), // Ensure type consistency
+                sp500PeProxyMono
+        );
+    }
 
-                                // Explicitly set the request parameters on the response object.
-                                setInputsToResponse(response, ticker, duration, unit);
-                                TechnicalIndicators technicalIndicators = new TechnicalIndicators(
-                                        volatility,
-                                        marketCap.doubleValue(),
-                                        latestVolume.doubleValue(),
-                                        volumes20Day,
-                                        sentiment,
-                                        latestNetIncome,
-                                        peRatioTtm,
-                                        sharesOutstanding,
-                                        sp500PeProxy
-                                );
+    private Mono<Double> calculatePeRatioMono(String ticker, Mono<AlphaVantageData> alphaVantageDataMono, Mono<Double> ttmEpsMono) {
+        return Mono.zip(alphaVantageDataMono, ttmEpsMono)
+                .map(tuple -> {
+                    AlphaVantageData alphaData = tuple.getT1();
+                    Double ttmEps = tuple.getT2();
 
-                                // Call the StockAnalyzerService with the combined data.
-                                try {
-                                    return Mono.just(stockAnalyzer.performStockAnalysis(
-                                            historicalData,
-                                            response,
-                                            technicalIndicators,
-                                            duration,
-                                            unit,
-                                            useRegressionCoefficientModel
-                                    ));
-                                } catch (IOException | InterruptedException e) {
-                                    throw new RuntimeException(e);
-                                }
-                            });
+                    // Safely extract the latest price from AlphaVantageData
+                    BigDecimal latestPrice = alphaData.getHistoricalPrices().entrySet().stream()
+                            .reduce((a, b) -> b).orElseThrow(() -> new RuntimeException("No historical data found"))
+                            .getValue();
+
+                    double price = latestPrice.doubleValue();
+
+                    if (ttmEps == null || ttmEps == 0.0) {
+                        System.err.println("TTM EPS is zero for " + ticker + ". Returning Double.MAX_VALUE for P/E.");
+                        return Double.MAX_VALUE;
+                    }
+
+                    // P/E Ratio = Price / EPS
+                    return price / ttmEps;
                 })
-                .onErrorResume(e -> Mono.just(createErrorResponse(e.getMessage())));
+                // Ensure this P/E calculation error is distinguishable
+                .onErrorMap(e -> new RuntimeException("Error calculating P/E Ratio from Price and EPS: " + e.getMessage(), e));
+
+    }
+
+    private Mono<StockAnalysisResponse> performAnalysisOnData(
+            String ticker,
+            int duration,
+            String unit,
+            boolean useRegressionCoefficientModel,
+            Tuple7<AlphaVantageData, BigDecimal, Double, BigDecimal, Double, Double, Double> tuple) {
+
+        // Destructure the data from the Tuple
+        AlphaVantageData avData = tuple.getT1();
+        BigDecimal marketCap = tuple.getT2();
+        Double sentiment = tuple.getT3();
+        BigDecimal latestNetIncome = tuple.getT4();
+        double peRatioTtm = tuple.getT5();
+        double sharesOutstanding = tuple.getT6();
+        double sp500PeProxy = tuple.getT7();
+
+        // Extract nested data
+        Map<LocalDate, BigDecimal> historicalData = avData.getHistoricalPrices();
+        BigDecimal latestVolume = avData.getLatestVolume();
+        List<BigDecimal> volumes20Day = avData.getVolumes20Day();
+
+        // Chain the reactive volatility calculation
+        return calculateVolatility(historicalData)
+                .flatMap(volatility -> {
+                    // 3.1: Prepare the response and technical indicators
+                    StockAnalysisResponse response = new StockAnalysisResponse();
+                    setInputsToResponse(response, ticker, duration, unit);
+
+                    TechnicalIndicators technicalIndicators = createTechnicalIndicators(
+                            volatility, marketCap, latestVolume, volumes20Day, sentiment,
+                            latestNetIncome, peRatioTtm, sharesOutstanding, sp500PeProxy);
+
+                    // 3.2: Call the final analysis service
+                    try {
+                        return Mono.just(stockAnalyzer.performStockAnalysis(
+                                historicalData,
+                                response,
+                                technicalIndicators,
+                                duration,
+                                unit,
+                                useRegressionCoefficientModel
+                        ));
+                    } catch (IOException | InterruptedException e) {
+                        // Convert checked exceptions to a reactive error signal
+                        return Mono.error(new RuntimeException("Final stock analysis failed.", e));
+                    }
+                });
+    }
+
+    private TechnicalIndicators createTechnicalIndicators(
+            double volatility,
+            BigDecimal marketCap,
+            BigDecimal latestVolume,
+            List<BigDecimal> volumes20Day,
+            Double sentiment,
+            BigDecimal latestNetIncome,
+            double peRatioTtm,
+            double sharesOutstanding,
+            double sp500PeProxy) {
+        return new TechnicalIndicators(
+                volatility,
+                marketCap.doubleValue(),
+                latestVolume.doubleValue(),
+                volumes20Day,
+                sentiment,
+                latestNetIncome,
+                peRatioTtm,
+                sharesOutstanding,
+                sp500PeProxy
+        );
     }
 
     /**
